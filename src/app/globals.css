@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+/* Play Panda brand typeface — Hank Rnd (same files as the marketing site). */
+@font-face {
+  font-family: "HankRnd";
+  src: url("/fonts/HankRnd-Light.ttf") format("truetype");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "HankRnd";
+  src: url("/fonts/HankRnd-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "HankRnd";
+  src: url("/fonts/HankRnd-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "HankRnd";
+  src: url("/fonts/HankRnd-Black.ttf") format("truetype");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme {
+  /* Play Panda brand palette (from playpanda/tailwind.config.ts).
+     Rule from the brand guidelines: no colors outside this palette. */
+  --color-coral: #ff613a;
+  --color-green: #009d72;
+  --color-yellow: #ffbb01;
+  --color-purple: #8061be;
+  --color-teal: #01c9c7;
+  --color-pink: #ff7ebe;
+  --color-brown: #d06f28;
+  --color-ink: #000000;
+  --color-cream: #fff8ec;
+
+  --font-display: "HankRnd", ui-rounded, system-ui, sans-serif;
+  --font-sans: "HankRnd", ui-rounded, system-ui, sans-serif;
+
+  /* Chunky, playful shapes + flat offset shadows, per the marketing site. */
+  --radius-chunk: 1.75rem;
+  --shadow-chunk: 0 10px 0 0 rgb(0 0 0 / 0.08);
+  --shadow-chunk-hover: 0 14px 0 0 rgb(0 0 0 / 0.12);
+  --shadow-btn: 0 6px 0 rgb(0 0 0 / 0.12);
+  --shadow-btn-pressed: 0 4px 0 rgb(0 0 0 / 0.12);
+}
+
+html,
+body {
+  background-color: #fff8ec;
+  color: #000;
+  font-family: var(--font-display);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: #ff613a;
+  color: #fff;
+}
+
+/* Hide number-input spinners; the UI uses its own steppers. */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
