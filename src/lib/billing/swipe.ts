@@ -17,8 +17,10 @@ import type {
   BillingProvider,
   CreateBookingInput,
   CustomerProfile,
+  DaySales,
   InvoiceLine,
   RecordPaymentInput,
+  TodaySession,
 } from "./types";
 
 const SWIPE_BASE_URL = "https://app.getswipe.in/api";
@@ -470,6 +472,296 @@ async function createSwipeInvoice(
   };
 }
 
+// ── Session monitor ──────────────────────────────────────────────────────────
+// Ports pp-billing's parse-session logic: today's invoices → play sessions.
+// One session card per play-time line item; socks/extra-adult lines are not
+// sessions. App bookings are recognised by the Validation Code header.
+
+const PLAY_TIME_CATEGORY = "play time";
+const MEMBERSHIP_PUNCH_CATEGORY = "play time - memberships - punch";
+
+/** The "Validation Code" document custom header, or null when absent (walk-in). */
+function readValidationCode(inv: Record<string, unknown>): string | null {
+  const docHeaders = (inv.document_custom_headers as Array<Record<string, unknown>>) ?? [];
+  const header = docHeaders.find(
+    (h) =>
+      Number(h.header_id) === VALIDATION_CODE_HEADER.headerId ||
+      /validation code/i.test(String(h.label ?? h.name ?? ""))
+  );
+  const headerValue = header?.value;
+  return headerValue != null && String(headerValue).trim() ? String(headerValue).trim() : null;
+}
+
+interface SessionItem {
+  name: string;
+  quantity: number;
+  category: string;
+  /** Line total after discounts, ₹. 0 can mean a zeroed edit-artifact line. */
+  totalAmount: number;
+  customColNames: string[];
+  customColValues: string[];
+}
+
+interface SessionInvoice {
+  /** Swipe new_hash_id — the stable doc handle (matches pp-billing's ids). */
+  id: string;
+  serialNumber: string;
+  bookedAt: number; // unix ms
+  paid: boolean;
+  amountDue: number;
+  validationCode: string | null;
+  partyName: string;
+  phone: string;
+  companyName: string;
+  partyCustomFields: { name: string; value: string }[];
+  items: SessionItem[];
+}
+
+/** Raw get_transactions rows for today (paged) — totals + payments included. */
+async function listTodayTransactions(): Promise<Array<Record<string, unknown>>> {
+  const PAGE_SIZE = 100;
+  const today = swipeDateToday();
+  const rows: Array<Record<string, unknown>> = [];
+  for (let page = 0; page < 20; page++) {
+    const res = await swipeCall<SwipeResponse & { transactions?: Array<Record<string, unknown>> }>(
+      "v2/doc",
+      "get_transactions",
+      {
+        num_records: PAGE_SIZE,
+        page,
+        payment_status: 0,
+        search: "",
+        search_type: "Customer",
+        filters: { invoice_type: [], payment_mode: "", filtered_users: [], status: "", is_export: false, type_of_doc: [], prefixes: [] },
+        date: `${today} - ${today}`,
+        document_type: "invoice",
+        sort_type: "",
+        sort_order: "",
+      }
+    );
+    const batch = res.transactions ?? [];
+    rows.push(...batch);
+    if (batch.length < PAGE_SIZE) break;
+  }
+  return rows;
+}
+
+async function getSessionInvoice(newHashId: string): Promise<SessionInvoice | null> {
+  const d = await swipeCall<SwipeResponse & { invoice_details?: Record<string, unknown> }>(
+    "v2/doc",
+    "get_invoice",
+    { new_hash_id: newHashId, document_type: "invoice", is_pdf: false }
+  );
+  const inv = d.invoice_details;
+  if (!inv) return null;
+  return normalizeSessionInvoice(inv, newHashId);
+}
+
+/** Shape a raw get_invoice payload into the session-parsing form. */
+function normalizeSessionInvoice(
+  inv: Record<string, unknown>,
+  fallbackId: string
+): SessionInvoice {
+  const cust =
+    typeof inv.customer === "object" && inv.customer
+      ? (inv.customer as Record<string, unknown>)
+      : ((inv.party as Record<string, unknown>) ?? {});
+
+  // record_time is unix seconds as a string, or an HTTP date on some payloads.
+  let bookedAt = Number(inv.record_time) * 1000;
+  if (isNaN(bookedAt)) bookedAt = new Date(String(inv.record_time)).getTime();
+  if (isNaN(bookedAt)) bookedAt = Date.now();
+
+  const paid = String(inv.payment_status ?? "").toLowerCase() === "paid";
+  return {
+    id: String(inv.new_hash_id ?? inv.hash_id ?? fallbackId),
+    serialNumber: String(inv.serial_number ?? ""),
+    bookedAt,
+    paid,
+    // What's actually left to collect — Swipe tracks partial payments here.
+    amountDue: Number(inv.amount_pending ?? (paid ? 0 : (inv.total_amount ?? 0))),
+    validationCode: readValidationCode(inv),
+    partyName: String(cust.name ?? ""),
+    phone: String(cust.phone_number ?? ""),
+    companyName: String(cust.company_name ?? ""),
+    partyCustomFields: Array.isArray(cust.custom_fields)
+      ? (cust.custom_fields as Array<Record<string, unknown>>).map((f) => ({
+          name: String(f.name ?? ""),
+          value: String(f.value ?? ""),
+        }))
+      : [],
+    items: ((inv.items as Array<Record<string, unknown>>) ?? []).map((item) => {
+      const quantity = Number(item.quantity ?? item.qty ?? 0);
+      return {
+        name: String(item.name ?? item.product_name ?? ""),
+        quantity,
+        category: String(item.category ?? item.product_category ?? ""),
+        totalAmount:
+          item.total_amount != null
+            ? Number(item.total_amount)
+            : quantity * Number(item.price_with_tax ?? 0),
+        customColNames: Array.isArray(item.custom_col_names) ? item.custom_col_names.map(String) : [],
+        customColValues: Array.isArray(item.custom_col_values) ? item.custom_col_values.map(String) : [],
+      };
+    }),
+  };
+}
+
+/** Parse duration from a product name, e.g. "Panda's Favorite - 2hr" → 120. */
+function parseDurationFromName(name: string): number {
+  const lower = name.toLowerCase();
+  const hrMatch = lower.match(/(\d+)\s*(?:hr|hour)s?/);
+  if (hrMatch) return parseInt(hrMatch[1]) * 60;
+  const minMatch = lower.match(/(\d+)\s*(?:min(?:ute)?s?)/);
+  if (minMatch) return parseInt(minMatch[1]);
+  return 0;
+}
+
+/** Read the "Number of Hours" custom column on a membership-punch item. */
+function readMembershipHours(item: SessionItem): number {
+  const idx = item.customColNames.findIndex((n) => n.toLowerCase().trim() === "number of hours");
+  if (idx === -1) return 0;
+  const val = parseFloat(item.customColValues[idx]);
+  return isNaN(val) || val <= 0 ? 0 : val;
+}
+
+// Read the "Membership Overrides" custom field on the customer. The value is a
+// list of "<n>_<DIM>" tokens describing how each play differs from the
+// membership default: HOUR/HOURS = per-play duration, KID/KIDS = per-play kid
+// count. The PLAYS token is billing-only and ignored here.
+function readMembershipOverrides(customFields: { name: string; value: string }[]): {
+  hoursPerPlay: number;
+  kidsPerPlay: number;
+} {
+  const field = customFields.find((f) => f.name.toLowerCase().trim() === "membership overrides");
+  if (!field) return { hoursPerPlay: 0, kidsPerPlay: 0 };
+
+  let hoursPerPlay = 0;
+  let kidsPerPlay = 0;
+  for (const m of field.value.matchAll(/(\d+)_([A-Z]+)/gi)) {
+    const n = parseInt(m[1], 10);
+    if (isNaN(n) || n <= 0) continue;
+    const dim = m[2].toUpperCase();
+    if (dim === "HOUR" || dim === "HOURS") hoursPerPlay = n;
+    else if (dim === "KID" || dim === "KIDS") kidsPerPlay = n;
+  }
+  return { hoursPerPlay, kidsPerPlay };
+}
+
+/** Kid names from "Child N" custom fields, falling back to company_name parsing. */
+function parseSessionKidNames(
+  customFields: { name: string; value: string }[],
+  companyName: string
+): string[] {
+  const fromFields = parseKidNames(customFields);
+  if (fromFields.length > 0) return fromFields;
+
+  if (!companyName) return [];
+  const names: string[] = [];
+  for (const part of companyName.split(/\s+DOB[-\s]?/i)) {
+    const name = part.replace(/\d{1,2}[A-Z]{3}\d{0,4}$/i, "").trim();
+    if (name) names.push(name);
+  }
+  return names.length > 0 ? names : [companyName];
+}
+
+// One "group" = one play-time line item that should produce its own session card.
+interface SessionGroup {
+  name: string;
+  quantity: number;
+  baseMinutes: number;
+  isMembership: boolean;
+}
+
+function parseInvoiceToSessions(inv: SessionInvoice): TodaySession[] {
+  const groups: SessionGroup[] = [];
+  let extraMinutes = 0;
+
+  const { hoursPerPlay, kidsPerPlay } = readMembershipOverrides(inv.partyCustomFields);
+
+  for (const item of inv.items) {
+    const cat = item.category.toLowerCase().trim();
+
+    if (cat === MEMBERSHIP_PUNCH_CATEGORY) {
+      // Only punch products represent an active visit; plain membership
+      // purchases are not sessions.
+      const hours = hoursPerPlay || readMembershipHours(item);
+      groups.push({
+        name: item.name,
+        quantity: kidsPerPlay ? item.quantity * kidsPerPlay : item.quantity,
+        baseMinutes: hours * 60,
+        isMembership: true,
+      });
+      continue;
+    }
+
+    if (cat === PLAY_TIME_CATEGORY) {
+      const mins = parseDurationFromName(item.name);
+      if (mins <= 0) continue;
+
+      // Editing an invoice in Swipe can leave a duplicated play-time line with
+      // a zeroed total next to the real billed line (seen live on INV-1350).
+      // That zero line is an artifact, not an extra kid — skip it. Standalone
+      // ₹0 lines (genuine comps) have no billed twin and still count.
+      if (
+        item.totalAmount === 0 &&
+        inv.items.some((o) => o !== item && o.name === item.name && o.totalAmount > 0)
+      ) {
+        continue;
+      }
+
+      if (/extra/i.test(item.name)) {
+        // "Extra 30 Minutes" qty=N → N×30 min of additional time, distributed
+        // per-kid across all play-time groups on this invoice.
+        extraMinutes += mins * item.quantity;
+      } else {
+        // "Mini Adventure - 1hr" qty=2 → 2 kids, each gets 1hr
+        groups.push({
+          name: item.name,
+          quantity: item.quantity,
+          baseMinutes: mins,
+          isMembership: false,
+        });
+      }
+    }
+  }
+
+  if (groups.length === 0) return [];
+
+  // Distribute extras equally per kid across the whole invoice. Each session's
+  // shared timer advances by the per-kid amount, not kidCount × per-kid.
+  const totalKidCount = groups.reduce((s, g) => s + g.quantity, 0);
+  const perKidExtra = totalKidCount > 0 ? extraMinutes / totalKidCount : 0;
+
+  const allKidNames = parseSessionKidNames(inv.partyCustomFields, inv.companyName);
+
+  // Single-session invoices keep the bare doc id (matches pp-billing's Redis
+  // checkout state); split invoices suffix #i so each card has its own state.
+  const useSuffix = groups.length > 1;
+
+  let kidOffset = 0;
+  return groups.map((g, i) => {
+    const kidNames = allKidNames.slice(kidOffset, kidOffset + g.quantity);
+    kidOffset += g.quantity;
+
+    return {
+      id: useSuffix ? `${inv.id}#${i}` : inv.id,
+      invoiceNumber: inv.serialNumber,
+      kidNames,
+      parentName: inv.partyName,
+      phone: inv.phone,
+      bookedAt: inv.bookedAt,
+      durationMinutes: g.baseMinutes > 0 ? g.baseMinutes + perKidExtra : 0,
+      products: [g.name],
+      kidCount: Math.max(g.quantity, 1),
+      isMembership: g.isMembership,
+      paid: inv.paid,
+      amountDue: inv.amountDue,
+      validationCode: inv.validationCode,
+    };
+  });
+}
+
 // ── Provider ─────────────────────────────────────────────────────────────────
 
 export const swipeBilling: BillingProvider = {
@@ -527,19 +819,20 @@ export const swipeBilling: BillingProvider = {
     if (!inv) return null;
 
     const items = (inv.items as Array<Record<string, unknown>>) ?? [];
-
-    // The validation code is the "Validation Code" document custom header.
-    const docHeaders = (inv.document_custom_headers as Array<Record<string, unknown>>) ?? [];
-    const header = docHeaders.find(
-      (h) =>
-        Number(h.header_id) === VALIDATION_CODE_HEADER.headerId ||
-        /validation code/i.test(String(h.label ?? h.name ?? ""))
-    );
-    const headerValue = header?.value;
-    const validationCode =
-      headerValue != null && String(headerValue).trim() ? String(headerValue).trim() : null;
-
+    const validationCode = readValidationCode(inv);
     const customer = inv.customer as { name?: string } | undefined;
+
+    // Same parse the ops monitor uses — gives the confirmation screen the
+    // session ids (check-in state keys) and play minutes for this invoice.
+    let playSessions: BookingDetails["playSessions"] = [];
+    try {
+      playSessions = parseInvoiceToSessions(
+        normalizeSessionInvoice(inv, String(match.new_hash_id))
+      ).map((s) => ({ id: s.id, durationMinutes: s.durationMinutes }));
+    } catch (err) {
+      console.error("failed to derive play sessions for booking:", err);
+    }
+
     return {
       invoiceNumber: String(inv.serial_number ?? serial),
       validationCode,
@@ -550,6 +843,7 @@ export const swipeBilling: BillingProvider = {
         name: String(it.name ?? it.product_name ?? ""),
         quantity: Number(it.qty ?? it.quantity ?? 1),
       })),
+      playSessions,
     };
   },
 
@@ -586,6 +880,49 @@ export const swipeBilling: BillingProvider = {
         },
       ],
     });
+  },
+
+  async listTodaySessions(): Promise<TodaySession[]> {
+    const ids = (await listTodayTransactions())
+      .map((t) => t.new_hash_id)
+      .filter(Boolean)
+      .map(String);
+    const invoices = await Promise.all(
+      ids.map((id) =>
+        getSessionInvoice(id).catch((err) => {
+          console.error(`failed to load invoice ${id} for sessions:`, err);
+          return null;
+        })
+      )
+    );
+
+    const sessions: TodaySession[] = [];
+    for (const inv of invoices) {
+      if (inv) sessions.push(...parseInvoiceToSessions(inv));
+    }
+    return sessions;
+  },
+
+  // Same rollup pp-billing shows: billed total across today's invoices, plus
+  // what was actually collected, bucketed by payment mode.
+  async getTodaySales(): Promise<DaySales> {
+    const rows = await listTodayTransactions();
+    const sales: DaySales = { total: 0, cash: 0, card: 0, upi: 0, other: 0, invoiceCount: rows.length };
+    for (const row of rows) {
+      sales.total += Number(row.total_amount ?? 0);
+      const payments = Array.isArray(row.payments)
+        ? (row.payments as Array<Record<string, unknown>>)
+        : [];
+      for (const p of payments) {
+        const amount = Number(p.amount ?? 0);
+        const mode = String(p.payment_mode ?? "").toLowerCase();
+        if (mode === "cash") sales.cash += amount;
+        else if (mode === "card") sales.card += amount;
+        else if (mode === "upi") sales.upi += amount;
+        else sales.other += amount;
+      }
+    }
+    return sales;
   },
 
   async health(): Promise<Record<string, unknown>> {

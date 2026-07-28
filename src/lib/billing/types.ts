@@ -78,6 +78,56 @@ export interface BookingDetails {
   amount: number;
   paid: boolean;
   lines: BookingLine[];
+  /**
+   * Play-session handles this invoice yields on the ops monitor (same ids the
+   * check-in state is keyed by), with each session's play minutes. Lets the
+   * confirmation screen show checked-in status and the computed end time.
+   */
+  playSessions: Array<{ id: string; durationMinutes: number }>;
+}
+
+/**
+ * One live play session for the ops monitor — one card on the floor screen.
+ * A single invoice can yield several sessions (e.g. two kids on different
+ * packages), each with its own stable `id`.
+ */
+export interface TodaySession {
+  /** Stable per-card handle (provider doc id, suffixed #i when an invoice splits). */
+  id: string;
+  /** Human-facing invoice number, e.g. "INV-1616". */
+  invoiceNumber: string;
+  kidNames: string[];
+  parentName: string;
+  phone: string;
+  /** When the booking/invoice was created, unix ms. */
+  bookedAt: number;
+  /** Play duration in minutes; 0 = untimed (membership visit). */
+  durationMinutes: number;
+  /** Play-time product names on this session. */
+  products: string[];
+  kidCount: number;
+  isMembership: boolean;
+  paid: boolean;
+  /** Amount still to collect on the invoice, INR (0 when fully paid; tracks partial payments). */
+  amountDue: number;
+  /**
+   * The 4-digit code on app bookings (these require counter check-in before
+   * the timer starts); null for counter walk-ins, whose timer runs from
+   * `bookedAt`. Server-side only — never send this to the client.
+   */
+  validationCode: string | null;
+}
+
+/** Today's sales rollup for the ops monitor header. */
+export interface DaySales {
+  /** Sum of today's invoice totals, INR (billed, including unpaid). */
+  total: number;
+  /** Collected today, by payment mode. */
+  cash: number;
+  card: number;
+  upi: number;
+  other: number;
+  invoiceCount: number;
 }
 
 export interface BillingProvider {
@@ -99,6 +149,15 @@ export interface BillingProvider {
 
   /** Record a collected payment against the booking (marks the invoice paid). */
   recordPayment(input: RecordPaymentInput): Promise<void>;
+
+  /**
+   * All play sessions from today's invoices, for the ops session monitor.
+   * Includes app bookings (with validationCode) and counter walk-ins.
+   */
+  listTodaySessions(): Promise<TodaySession[]>;
+
+  /** Today's sales rollup (billed total + collected by mode), for the ops header. */
+  getTodaySales(): Promise<DaySales>;
 
   /** Read-only connectivity/auth diagnostics. */
   health(): Promise<Record<string, unknown>>;
