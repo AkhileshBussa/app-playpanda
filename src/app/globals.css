@@ -62,6 +62,10 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   -webkit-tap-highlight-color: transparent;
+  /* Stop mobile WebKit/Chrome from selectively inflating text ("font
+     boosting") — seen blowing up single pills on iOS. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 ::selection {

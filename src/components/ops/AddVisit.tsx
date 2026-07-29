@@ -87,7 +87,9 @@ export default function AddVisit({ open, onClose, onAdded }: AddVisitProps) {
                   key={opt.value}
                   type="button"
                   onClick={() => setHours(opt.value)}
-                  className={`flex-1 rounded-full py-2.5 text-base font-black transition-colors ${
+                  // Fixed height + leading-none: mobile WebKit's font boosting
+                  // otherwise inflates a lone pill's text and breaks the row.
+                  className={`flex h-11 flex-1 items-center justify-center whitespace-nowrap rounded-full text-base font-black leading-none transition-colors ${
                     hours === opt.value
                       ? "bg-ink text-cream"
                       : "bg-white text-ink/60 hover:bg-ink/10"
