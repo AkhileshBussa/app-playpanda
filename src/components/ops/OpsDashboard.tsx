@@ -193,7 +193,7 @@ export default function OpsDashboard() {
       <header className="sticky top-0 z-10 border-b-2 border-ink/5 bg-cream/95 backdrop-blur">
         <div className="flex flex-col items-center px-4 py-3">
           <h1 className="flex items-center gap-2 text-2xl font-black text-ink">
-            <Image src="/LogoWithoutBG.png" alt="" width={40} height={40} className="h-10 w-auto" />
+            <Image src="/LogoWithoutBG.png" alt="" width={76} height={40} className="h-10 w-auto" />
             <span>Session Monitor</span>
           </h1>
           <div className="mt-2 flex flex-wrap items-center justify-center gap-2">

@@ -76,6 +76,12 @@ export default function BookingForm() {
   // creating a duplicate in Swipe.
   const checkoutCache = useRef<{ key: string; data: CheckoutResponse } | null>(null);
 
+  // Re-entrancy guard: `disabled={busy}` relies on a re-render, so a double
+  // tap (or touchend + click both firing) could otherwise create two invoices.
+  const payInFlight = useRef(false);
+  // Distinguishes a tap from a scroll that starts on the button.
+  const touchMoved = useRef(false);
+
   const quote = useMemo(
     () => computeQuote({ packageId, kids, extraAdults, childSocks, adultSocks }),
     [packageId, kids, extraAdults, childSocks, adultSocks]
@@ -93,6 +99,8 @@ export default function BookingForm() {
       setError("Please enter a valid 10-digit mobile number");
       return;
     }
+    if (payInFlight.current) return;
+    payInFlight.current = true;
     setError(null);
     setStatus("booking");
 
@@ -127,6 +135,7 @@ export default function BookingForm() {
       const number = checkout.invoiceNumber.replace(/^\D+/, "");
       router.push(`/success/${encodeURIComponent(number)}`);
     } catch (err) {
+      payInFlight.current = false;
       setStatus("idle");
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
     }
@@ -142,10 +151,10 @@ export default function BookingForm() {
           <Image
             src="/LogoWithoutBG.png"
             alt="Play Panda"
-            width={96}
-            height={96}
+            width={84}
+            height={44}
             priority
-            className="h-20 w-20 -translate-x-2"
+            className="h-11 w-auto"
           />
           <h1 className="mt-1 text-[1.7rem] font-black leading-[1.05] text-ink">
             Book your play session
@@ -340,9 +349,24 @@ export default function BookingForm() {
           <button
             type="button"
             onClick={pay}
+            // On mobile, tapping while the keyboard is open closes it and the
+            // fixed bar shifts mid-gesture — the browser then drops the click.
+            // touchend still targets the element the finger landed on, so it
+            // books first-tap; preventDefault suppresses the follow-up click.
+            onTouchStart={() => {
+              touchMoved.current = false;
+            }}
+            onTouchMove={() => {
+              touchMoved.current = true;
+            }}
+            onTouchEnd={(e) => {
+              if (touchMoved.current || busy) return;
+              e.preventDefault();
+              pay();
+            }}
             disabled={busy}
             aria-disabled={!canSubmit}
-            className={`ml-auto inline-flex items-center justify-center rounded-full px-8 py-4 text-base font-black text-cream transition-all duration-150 active:translate-y-[2px] ${
+            className={`ml-auto inline-flex touch-manipulation items-center justify-center rounded-full px-8 py-4 text-base font-black text-cream transition-all duration-150 active:translate-y-[2px] ${
               canSubmit
                 ? "bg-coral shadow-btn hover:brightness-105 active:shadow-btn-pressed"
                 : "bg-coral/40"

@@ -131,10 +131,7 @@ export default async function SuccessPage({
       )}
 
       <div className="mt-4 w-full rounded-chunk bg-white p-6 shadow-chunk">
-        <div className="text-xs font-bold uppercase tracking-widest text-ink/40">Invoice number</div>
-        <div className="mt-1 text-3xl font-black tracking-tight text-coral">{booking.invoiceNumber}</div>
-
-        <div className="mt-5 space-y-2 border-t border-dashed border-ink/10 pt-4 text-left text-sm">
+        <div className="space-y-2 text-left text-sm">
           {booking.customerName && <Row label="Name" value={booking.customerName} />}
           {booking.lines.map((line, i) => (
             <Row key={i} label={i === 0 ? "Items" : ""} value={`${line.name} × ${line.quantity}`} />
