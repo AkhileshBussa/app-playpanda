@@ -145,6 +145,33 @@ export interface MembershipSaleInvoice {
   planLines: Array<{ sku: string; name: string; quantity: number }>;
 }
 
+/**
+ * A gateway payment order the browser opens checkout with (Razorpay). Created
+ * by the billing provider's connected gateway account — we hold no gateway keys.
+ */
+export interface PaymentOrder {
+  /** Gateway order id, e.g. Razorpay "order_...". */
+  orderId: string;
+  /** Public key id for the gateway's browser checkout. */
+  keyId: string;
+  /** Amount in the smallest currency unit (paise for INR). */
+  amountMinor: number;
+  currency: string;
+}
+
+export interface ConfirmOnlinePaymentInput {
+  /** The opaque `ref` returned by createBooking. */
+  ref: string;
+  /** The order id the checkout was opened with. */
+  orderId: string;
+  /** Gateway payment id, e.g. Razorpay "pay_...". */
+  paymentId: string;
+  /** Gateway signature over (orderId, paymentId) — the provider verifies it. */
+  signature: string;
+  /** Full raw checkout response, passed through to the provider. */
+  raw?: Record<string, unknown>;
+}
+
 /** Returning-customer details, for prefilling the booking form. */
 export interface CustomerProfile {
   name: string;
@@ -272,6 +299,19 @@ export interface BillingProvider {
    * the pick-list for linking a membership to the sale it was billed on.
    */
   listTodayMembershipSales(): Promise<MembershipSaleInvoice[]>;
+
+  /**
+   * Create an online-payment order for the booking on the provider's connected
+   * gateway. Returns null when online collection isn't available (gateway not
+   * connected / not supported) — callers fall back to pay-at-counter.
+   */
+  createPaymentOrder(ref: string): Promise<PaymentOrder | null>;
+
+  /**
+   * Verify and record a completed online payment. The provider checks the
+   * gateway signature and marks the invoice paid; throws if verification fails.
+   */
+  confirmOnlinePayment(input: ConfirmOnlinePaymentInput): Promise<void>;
 
   /**
    * All play sessions from today's invoices, for the ops session monitor.

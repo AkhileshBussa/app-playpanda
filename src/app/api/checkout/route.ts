@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { computeQuote, PACKAGES, type PackageId } from "@/lib/pricing";
-import { billing } from "@/lib/billing";
+import { billing, type PaymentOrder } from "@/lib/billing";
+import { createTestOrder, testGatewayEnabled } from "@/lib/testGateway";
 
 const bookingSchema = z.object({
   name: z.string().trim().min(2, "Please enter your name").max(60),
@@ -38,11 +39,26 @@ export async function POST(req: Request) {
       validationCode,
     });
 
-    // The invoice now exists in the billing backend (unpaid). While online
-    // payment is off, the customer pays at the counter. `ref` is an opaque
-    // handle for recording the payment later.
+    // The invoice now exists in the billing backend (unpaid). With payments
+    // on, also create a gateway order so the browser can open Razorpay
+    // checkout. Any failure here degrades to pay-at-counter — the booking is
+    // already saved and must never be lost to a payment hiccup.
+    let payment: PaymentOrder | null = null;
+    if (paymentsEnabled) {
+      try {
+        // With rzp_test_ keys in env, orders are created in Razorpay TEST MODE
+        // directly (Swipe's gateway flow is live-only). See lib/testGateway.
+        payment = testGatewayEnabled()
+          ? await createTestOrder(quote.total, booking.invoiceNumber)
+          : await billing.createPaymentOrder(booking.ref);
+      } catch (err) {
+        console.error("payment order creation failed (falling back to counter):", err);
+      }
+    }
+
     return NextResponse.json({
-      skipPayment: !paymentsEnabled,
+      skipPayment: payment == null,
+      payment,
       invoiceNumber: booking.invoiceNumber,
       ref: booking.ref,
       validationCode,
