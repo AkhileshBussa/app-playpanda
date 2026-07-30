@@ -15,16 +15,20 @@ import type {
   Booking,
   BookingDetails,
   BillingProvider,
+  ConfirmOnlinePaymentInput,
   CreateBookingInput,
   CustomerProfile,
   DaySales,
   InvoiceLine,
+  PaymentOrder,
   RecordPaymentInput,
   TodaySession,
 } from "./types";
 
 const SWIPE_BASE_URL = "https://app.getswipe.in/api";
 const TOKEN_KEY = "swipe:token";
+/** Swipe's menu_name for invoices (payment endpoints key documents by menu). */
+const SWIPE_MENU_NAME = "sales";
 /** The bank the counter records against (HDFC — bank_id 1 in this account). */
 const DEFAULT_BANK_ID = 1;
 /**
@@ -327,12 +331,14 @@ interface SwipeRef {
   serialNumber: string;
   docCount: number;
   partyId: number | null;
+  /** Swipe new_hash_id — needed to create/confirm gateway payment orders. */
+  hashId: string;
 }
 
 async function createSwipeInvoice(
   input: CreateBookingInput,
   customerId: number | null
-): Promise<{ invoiceNumber: string; docCount: number }> {
+): Promise<{ invoiceNumber: string; docCount: number; hashId: string }> {
   const date = swipeDateToday();
   const items = input.lines.map(toSwipeItem);
   const totalAmount = round2(items.reduce((s, i) => s + i.total_amount, 0));
@@ -469,6 +475,7 @@ async function createSwipeInvoice(
   return {
     invoiceNumber: res.serial_number || serialNumber,
     docCount: Number(res.doc_count ?? 0),
+    hashId,
   };
 }
 
@@ -781,8 +788,8 @@ export const swipeBilling: BillingProvider = {
 
   async createBooking(input: CreateBookingInput): Promise<Booking> {
     const customerId = await ensureCustomer(input.customer);
-    const { invoiceNumber, docCount } = await createSwipeInvoice(input, customerId);
-    const ref: SwipeRef = { serialNumber: invoiceNumber, docCount, partyId: customerId };
+    const { invoiceNumber, docCount, hashId } = await createSwipeInvoice(input, customerId);
+    const ref: SwipeRef = { serialNumber: invoiceNumber, docCount, partyId: customerId, hashId };
     return { invoiceNumber, ref: JSON.stringify(ref) };
   },
 
@@ -879,6 +886,62 @@ export const swipeBilling: BillingProvider = {
           project_id: -1,
         },
       ],
+    });
+  },
+
+  // Mirrors Swipe's own public payment-link page: Swipe creates the Razorpay
+  // order on ITS connected account and returns that account's public key, so
+  // no gateway keys or webhooks live on our side.
+  async createPaymentOrder(ref: string): Promise<PaymentOrder | null> {
+    const { hashId } = JSON.parse(ref) as SwipeRef;
+    if (!hashId) return null;
+
+    const res = await swipeCall<SwipeResponse & { data?: Record<string, unknown> }>(
+      "v2/doc",
+      "doc_rzp_create_order",
+      { menu_name: SWIPE_MENU_NAME, new_hash_id: hashId, order_type: "doc" },
+      { allowFailure: true }
+    );
+    if (res.success === false) {
+      console.error("doc_rzp_create_order failed:", JSON.stringify(res));
+      return null;
+    }
+
+    // Order fields arrive under `data` or at the top level depending on the
+    // gateway. Only Razorpay (Swipe's default gateway branch) is supported;
+    // a missing public_token means the account's gateway isn't connected.
+    const d = (res.data ?? res) as Record<string, unknown>;
+    const gateway = String(d.gateway ?? "razorpay").toLowerCase();
+    const orderId = d.order_id != null ? String(d.order_id) : "";
+    const keyId = d.public_token != null ? String(d.public_token) : "";
+    const amountMinor = Number(d.amount ?? 0);
+    if (gateway !== "razorpay" || !orderId || !keyId || !(amountMinor > 0)) {
+      console.error("doc_rzp_create_order: no usable Razorpay order:", JSON.stringify(res));
+      return null;
+    }
+    return { orderId, keyId, amountMinor, currency: String(d.currency ?? "INR") };
+  },
+
+  async confirmOnlinePayment(input: ConfirmOnlinePaymentInput): Promise<void> {
+    const { hashId } = JSON.parse(input.ref) as SwipeRef;
+    // Same payload Swipe's payment-link page sends on checkout success; Swipe
+    // verifies the Razorpay signature server-side and marks the invoice paid.
+    await swipeCall("v2/doc", "pay_success_v2", {
+      orderCreationId: input.orderId,
+      razorpayPaymentId: input.paymentId,
+      razorpayOrderId: String(input.raw?.razorpay_order_id ?? input.orderId),
+      razorpaySignature: input.signature,
+      new_hash_id: hashId,
+      menu_name: SWIPE_MENU_NAME,
+      order_type: "doc",
+      razorpay_payload: input.raw ?? {
+        razorpay_order_id: input.orderId,
+        razorpay_payment_id: input.paymentId,
+        razorpay_signature: input.signature,
+      },
+      order_id: input.orderId,
+      gateway: "razorpay",
+      payment_id: input.paymentId,
     });
   },
 
