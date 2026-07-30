@@ -24,7 +24,7 @@ function kvConfig(): { url: string; token: string } {
 }
 
 /** Single-command Upstash REST call, e.g. redisCommand(["HSET", key, field, value]). */
-async function redisCommand<T>(command: (string | number)[]): Promise<T> {
+export async function redisCommand<T>(command: (string | number)[]): Promise<T> {
   const { url, token } = kvConfig();
   const res = await fetch(url, {
     method: "POST",
@@ -42,7 +42,7 @@ async function redisCommand<T>(command: (string | number)[]): Promise<T> {
 // ── Day scoping (IST) ────────────────────────────────────────────────────────
 
 /** Today's date in IST as YYYY-MM-DD. */
-function todayIST(): string {
+export function todayIST(): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Kolkata",
     year: "numeric",
