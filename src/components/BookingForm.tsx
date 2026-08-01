@@ -7,9 +7,18 @@ import { computeQuote, EXTRA_ADULT, PACKAGES, SOCKS, type PackageId } from "@/li
 
 const inr = (n: number) => `₹${n.toLocaleString("en-IN")}`;
 
-// While Razorpay isn't live yet, this is "false": bookings create the invoice
-// but skip online payment (pay at the counter).
+// Kill switch for online payment: set NEXT_PUBLIC_PAYMENTS_ENABLED="false" to
+// fall back to book-now-pay-at-counter (e.g. if the gateway misbehaves).
 const PAYMENTS_ENABLED = process.env.NEXT_PUBLIC_PAYMENTS_ENABLED !== "false";
+
+/** Razorpay order created by the billing backend's connected gateway. */
+interface PaymentOrder {
+  orderId: string;
+  keyId: string;
+  /** Paise. */
+  amountMinor: number;
+  currency: string;
+}
 
 interface CheckoutResponse {
   invoiceNumber: string;
@@ -17,9 +26,59 @@ interface CheckoutResponse {
   ref: string;
   total: number;
   skipPayment?: boolean;
+  payment?: PaymentOrder | null;
 }
 
-type Status = "idle" | "booking";
+type Status = "idle" | "booking" | "paying" | "verifying";
+
+// ── Razorpay checkout.js ─────────────────────────────────────────────────────
+
+interface RazorpaySuccess {
+  razorpay_payment_id: string;
+  razorpay_order_id: string;
+  razorpay_signature: string;
+}
+
+interface RazorpayOptions {
+  key: string;
+  /** Paise, as a string (checkout.js convention). */
+  amount: string;
+  currency: string;
+  name: string;
+  description?: string;
+  order_id: string;
+  prefill?: { name?: string; contact?: string };
+  notes?: Record<string, string>;
+  theme?: { color?: string };
+  handler: (response: RazorpaySuccess) => void;
+  modal?: { ondismiss?: () => void };
+}
+
+declare global {
+  interface Window {
+    Razorpay?: new (options: RazorpayOptions) => { open: () => void };
+  }
+}
+
+let razorpayScript: Promise<boolean> | null = null;
+
+/** Load checkout.js once; resolves false (never rejects) when offline. */
+function loadRazorpay(): Promise<boolean> {
+  if (typeof window !== "undefined" && window.Razorpay) return Promise.resolve(true);
+  if (!razorpayScript) {
+    razorpayScript = new Promise((resolve) => {
+      const script = document.createElement("script");
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      script.onload = () => resolve(true);
+      script.onerror = () => {
+        razorpayScript = null; // allow a retry on the next attempt
+        resolve(false);
+      };
+      document.body.appendChild(script);
+    });
+  }
+  return razorpayScript;
+}
 
 export default function BookingForm() {
   const router = useRouter();
@@ -71,6 +130,11 @@ export default function BookingForm() {
       clearTimeout(timer);
     };
   }, [phone]);
+
+  // Preload the Razorpay SDK so the payment sheet opens instantly on tap.
+  useEffect(() => {
+    if (PAYMENTS_ENABLED) void loadRazorpay();
+  }, []);
 
   // Re-submitting the same selection reuses the created invoice instead of
   // creating a duplicate in Swipe.
@@ -133,7 +197,60 @@ export default function BookingForm() {
       // Invoice created in Swipe. The confirmation screen is keyed by the
       // invoice number (without prefix) and fetches everything from the backend.
       const number = checkout.invoiceNumber.replace(/^\D+/, "");
-      router.push(`/success/${encodeURIComponent(number)}`);
+      const goSuccess = () => router.push(`/success/${encodeURIComponent(number)}`);
+
+      const order = checkout.payment;
+      if (checkout.skipPayment || !order) {
+        goSuccess();
+        return;
+      }
+
+      // Online payment: the booking is already saved, so every failure path
+      // from here lands on the confirmation screen (unpaid → pay at counter).
+      if (!(await loadRazorpay()) || !window.Razorpay) {
+        goSuccess();
+        return;
+      }
+
+      const { ref } = checkout;
+      setStatus("paying");
+      new window.Razorpay({
+        key: order.keyId,
+        amount: String(order.amountMinor),
+        currency: order.currency,
+        name: "Play Panda",
+        description: "Play session booking",
+        order_id: order.orderId,
+        prefill: { name: name.trim(), contact: phone },
+        notes: { invoice: checkout.invoiceNumber },
+        theme: { color: "#FF613A" },
+        handler: async (rzp) => {
+          // Paid. Ask the backend to verify the signature and mark the invoice
+          // paid; even if that fails, the money is collected — proceed to the
+          // confirmation screen rather than alarming the customer.
+          setStatus("verifying");
+          try {
+            await fetch("/api/payment/verify", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                ref,
+                orderId: order.orderId,
+                paymentId: rzp.razorpay_payment_id,
+                signature: rzp.razorpay_signature,
+                raw: rzp,
+              }),
+            });
+          } catch {
+            // Verified server-side on retry at the counter if needed.
+          }
+          goSuccess();
+        },
+        modal: {
+          // Closed without paying — still booked; pay at the counter.
+          ondismiss: goSuccess,
+        },
+      }).open();
     } catch (err) {
       payInFlight.current = false;
       setStatus("idle");
@@ -373,13 +490,15 @@ export default function BookingForm() {
             } ${busy ? "opacity-60" : ""}`}
           >
             {status === "booking" && "Booking…"}
+            {status === "paying" && "Paying…"}
+            {status === "verifying" && "Confirming…"}
             {status === "idle" && (PAYMENTS_ENABLED ? `Pay ${inr(quote.total)}` : "Book now")}
           </button>
         </div>
       </div>
 
-      {/* Booking overlay */}
-      {status === "booking" && (
+      {/* Busy overlay (hidden while the Razorpay modal owns the screen) */}
+      {(status === "booking" || status === "verifying") && (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-cream/95 backdrop-blur-sm">
           <Image
             src="/MascotWithoutBG.png"
@@ -388,7 +507,9 @@ export default function BookingForm() {
             height={120}
             className="h-28 w-auto animate-bounce"
           />
-          <div className="mt-4 text-lg font-black text-ink">Creating your booking…</div>
+          <div className="mt-4 text-lg font-black text-ink">
+            {status === "booking" ? "Creating your booking…" : "Confirming your payment…"}
+          </div>
           <div className="text-sm font-bold text-ink/50">Just a moment</div>
         </div>
       )}
