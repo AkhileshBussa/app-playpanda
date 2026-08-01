@@ -52,11 +52,14 @@ export default function OpsSessionCard({
   const start = opsStartTime(session);
   const end = opsEndTime(session);
   const untimed = session.durationMinutes <= 0;
+  // Memberships get their own color while running (as pp-billing did) — teal is
+  // the palette's membership color, whether the punch visit is timed or not.
+  const membership = session.isMembership || untimed;
 
   // Palette-only theming per status (brand rule: no colors outside the palette).
   const theme = {
     waiting: { card: "border-purple/50 bg-purple/10", timer: "text-purple" },
-    active: untimed
+    active: membership
       ? { card: "border-teal/50 bg-teal/10", timer: "text-teal" }
       : { card: "border-green/50 bg-green/10", timer: "text-green" },
     expiring: { card: "border-yellow bg-yellow/15", timer: "text-brown" },
@@ -84,10 +87,20 @@ export default function OpsSessionCard({
         </div>
       </div>
 
-      {/* Amount-due badge (partial payments show only the remainder) */}
-      {session.amountDue > 0 && status !== "checked_out" && (
-        <div className="mb-1.5 self-start rounded-full bg-yellow px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-ink">
-          ₹{session.amountDue.toLocaleString("en-IN")} due
+      {/* Badges: membership marker + amount due (partial payments show the remainder) */}
+      {((session.isMembership && status !== "checked_out") ||
+        (session.amountDue > 0 && status !== "checked_out")) && (
+        <div className="mb-1.5 flex flex-wrap gap-1.5">
+          {session.isMembership && (
+            <span className="rounded-full bg-teal px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-cream">
+              Member
+            </span>
+          )}
+          {session.amountDue > 0 && (
+            <span className="rounded-full bg-yellow px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-ink">
+              ₹{session.amountDue.toLocaleString("en-IN")} due
+            </span>
+          )}
         </div>
       )}
 
