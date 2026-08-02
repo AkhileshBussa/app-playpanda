@@ -48,8 +48,10 @@ export default function OpsNav() {
                 <span aria-hidden className="text-sm sm:text-base">
                   {tool.icon}
                 </span>
-                <span className="hidden sm:inline">{tool.label}</span>
-                <span className="sm:hidden">{tool.short}</span>
+                {/* Full labels only once there's room for all four (they
+                    overflow a tablet); short ones everywhere below that. */}
+                <span className="hidden lg:inline">{tool.label}</span>
+                <span className="lg:hidden">{tool.short}</span>
               </Link>
             );
           })}

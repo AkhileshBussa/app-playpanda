@@ -102,9 +102,10 @@ export default function MembersApp() {
   }, [result, lookup]);
 
   return (
-    <main className="mx-auto flex w-full max-w-md flex-col px-5 pb-16 pt-6">
-      {/* Header */}
-      <header className="flex items-start justify-between">
+    <main className="mx-auto flex w-full max-w-6xl flex-col px-5 pb-16 pt-6">
+      {/* Header — capped to the search column so the mascot stays beside the
+          title instead of drifting to the far edge of a wide screen. */}
+      <header className="flex w-full max-w-2xl items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-black leading-tight text-ink">Memberships</h1>
           <p className="mt-1 text-sm font-bold text-ink/60">
@@ -118,8 +119,8 @@ export default function MembersApp() {
         <MembersTabs />
       </div>
 
-      {/* Search */}
-      <form onSubmit={search} className="mt-4 rounded-chunk bg-white p-4 shadow-chunk">
+      {/* Search — capped so the input doesn't stretch across a wide screen. */}
+      <form onSubmit={search} className="mt-4 rounded-chunk bg-white p-4 shadow-chunk lg:max-w-2xl">
         <label className="mb-1 block px-1 text-sm font-bold uppercase tracking-widest text-ink/50">
           Member phone number
         </label>
@@ -166,11 +167,13 @@ export default function MembersApp() {
           </div>
 
           {result.memberships.length === 0 && (
-            <p className="text-center text-sm font-bold text-ink/40">
+            <p className="text-sm font-bold text-ink/40">
               No memberships on this number yet — add the first one below.
             </p>
           )}
 
+          {/* Cards tile across the width on bigger screens; one per row on phones. */}
+          <div className="grid items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {result.memberships.map((m) => {
             const status = STATUS_STYLE[m.status];
             const pct =
@@ -294,13 +297,15 @@ export default function MembersApp() {
             );
           })}
 
+          {/* Sits in the grid as an "empty slot" tile next to the real cards. */}
           <button
             type="button"
             onClick={() => setShowNew(true)}
-            className="rounded-full border-2 border-dashed border-teal/50 bg-teal/5 py-3.5 text-base font-black text-teal transition-all active:translate-y-0.5"
+            className="rounded-chunk border-2 border-dashed border-teal/50 bg-teal/5 px-4 py-3.5 text-base font-black text-teal transition-all active:translate-y-0.5 sm:min-h-[11rem]"
           >
             + New membership on this number
           </button>
+          </div>
         </div>
       )}
 
