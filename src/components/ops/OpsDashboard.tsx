@@ -6,6 +6,7 @@ import { computeOpsStatus, type OpsSession, type OpsStatus } from "@/lib/ops/typ
 import { getManualVisits, manualToOpsSession, type ManualVisit } from "@/lib/ops/manual";
 import OpsSessionCard from "./OpsSessionCard";
 import AddVisit from "./AddVisit";
+import InvoiceItemsSheet from "./InvoiceItemsSheet";
 import SalesLine from "./SalesLine";
 
 type Filter = "all" | OpsStatus;
@@ -25,6 +26,8 @@ export default function OpsDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
+  /** Session whose invoice items are being viewed. */
+  const [invoiceFor, setInvoiceFor] = useState<OpsSession | null>(null);
   const [now, setNow] = useState(Date.now());
 
   // Actions in flight — while >0, keep optimistic overrides through polls.
@@ -268,6 +271,7 @@ export default function OpsDashboard() {
                 onCheckIn={handleCheckIn}
                 onUndoCheckIn={handleUndoCheckIn}
                 onCheckout={handleCheckout}
+                onShowInvoice={setInvoiceFor}
               />
             ))}
           </div>
@@ -282,6 +286,10 @@ export default function OpsDashboard() {
       >
         +
       </button>
+
+      {invoiceFor && (
+        <InvoiceItemsSheet session={invoiceFor} onClose={() => setInvoiceFor(null)} />
+      )}
 
       <AddVisit
         open={showAddForm}

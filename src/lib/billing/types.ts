@@ -105,6 +105,8 @@ export interface CustomerProfile {
 export interface BookingLine {
   name: string;
   quantity: number;
+  /** Line total incl. tax, INR. */
+  amount: number;
 }
 
 /** A booking looked up by invoice number — the source of truth for the confirmation screen. */

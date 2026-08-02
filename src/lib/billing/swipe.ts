@@ -942,6 +942,7 @@ export const swipeBilling: BillingProvider = {
       lines: items.map((it) => ({
         name: String(it.name ?? it.product_name ?? ""),
         quantity: Number(it.qty ?? it.quantity ?? 1),
+        amount: Number(it.total_amount ?? 0),
       })),
       playSessions,
     };

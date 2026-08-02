@@ -209,32 +209,7 @@ export default function BookingForm() {
           )}
         </section>
 
-        {/* Kids */}
-        <section className="rounded-chunk bg-white p-4 shadow-chunk">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-base font-black text-ink">Kids playing</div>
-              <div className="text-xs font-bold text-ink/50">Ages 1–12</div>
-            </div>
-            <Stepper value={kids} min={1} max={15} onChange={setKids} />
-          </div>
-          <input
-            type="text"
-            value={kidNames}
-            onChange={(e) => {
-              kidNamesTouched.current = true;
-              setKidNames(e.target.value);
-            }}
-            placeholder="Kids' names (optional) — e.g. Aarav, Diya"
-            className="mt-3 w-full rounded-2xl border-2 border-ink/10 bg-cream/60 px-4 py-3 text-sm font-bold text-ink outline-none placeholder:font-semibold placeholder:text-ink/30 focus:border-coral"
-          />
-          <div className="mt-3 flex items-center gap-2 rounded-2xl bg-green/10 px-3 py-2 text-xs font-bold text-green">
-            <span>🎟️</span>
-            <span>1 adult comes in free with every child.</span>
-          </div>
-        </section>
-
-        {/* Package */}
+        {/* Package — the choice that drives the price, so it comes first. */}
         <section>
           <div className="mb-2.5 px-1 text-sm font-bold uppercase tracking-widest text-coral">
             How long will they play?
@@ -269,6 +244,31 @@ export default function BookingForm() {
                 </button>
               );
             })}
+          </div>
+        </section>
+
+        {/* Kids */}
+        <section className="rounded-chunk bg-white p-4 shadow-chunk">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-base font-black text-ink">Kids playing</div>
+              <div className="text-xs font-bold text-ink/50">Ages 1–12</div>
+            </div>
+            <Stepper value={kids} min={1} max={15} onChange={setKids} />
+          </div>
+          <input
+            type="text"
+            value={kidNames}
+            onChange={(e) => {
+              kidNamesTouched.current = true;
+              setKidNames(e.target.value);
+            }}
+            placeholder="Kids' names (optional) — e.g. Aarav, Diya"
+            className="mt-3 w-full rounded-2xl border-2 border-ink/10 bg-cream/60 px-4 py-3 text-sm font-bold text-ink outline-none placeholder:font-semibold placeholder:text-ink/30 focus:border-coral"
+          />
+          <div className="mt-3 flex items-center gap-2 rounded-2xl bg-green/10 px-3 py-2 text-xs font-bold text-green">
+            <span>🎟️</span>
+            <span>1 adult comes in free with every child.</span>
           </div>
         </section>
 

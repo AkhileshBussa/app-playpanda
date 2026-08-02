@@ -31,6 +31,8 @@ interface OpsSessionCardProps {
   onCheckIn: (session: OpsSession, code: string) => Promise<string | null>;
   onUndoCheckIn: (session: OpsSession) => void;
   onCheckout: (session: OpsSession, undo: boolean) => void;
+  /** Open the invoice's line items; omitted for sessions with no invoice. */
+  onShowInvoice?: (session: OpsSession) => void;
 }
 
 export default function OpsSessionCard({
@@ -38,6 +40,7 @@ export default function OpsSessionCard({
   onCheckIn,
   onUndoCheckIn,
   onCheckout,
+  onShowInvoice,
 }: OpsSessionCardProps) {
   const [now, setNow] = useState(Date.now());
   const status = computeOpsStatus(session, now);
@@ -72,20 +75,37 @@ export default function OpsSessionCard({
 
   return (
     <div className={`flex flex-col rounded-2xl border-2 p-3 transition-all duration-300 ${theme.card}`}>
-      {/* Kid names | kid count */}
-      <div className="mb-1.5 flex items-start gap-2">
-        <div
-          className={`min-w-0 flex-1 break-words text-lg font-black leading-tight ${
-            status === "checked_out" ? "text-ink/40 line-through" : "text-ink"
-          }`}
-        >
-          {kidNamesDisplay}
-        </div>
-        <div className={`flex shrink-0 items-baseline gap-1 ${theme.timer}`}>
-          <span className="text-2xl font-black leading-none">{session.kidCount}</span>
-          <span className="text-xs font-bold">{session.kidCount === 1 ? "Kid" : "Kids"}</span>
-        </div>
-      </div>
+      {/* Kid names | kid count — tapping opens what was billed on the invoice.
+          Manual membership visits have no invoice behind them, so they don't. */}
+      {(() => {
+        const header = (
+          <>
+            <div
+              className={`min-w-0 flex-1 break-words text-lg font-black leading-tight ${
+                status === "checked_out" ? "text-ink/40 line-through" : "text-ink"
+              }`}
+            >
+              {kidNamesDisplay}
+            </div>
+            <div className={`flex shrink-0 items-baseline gap-1 ${theme.timer}`}>
+              <span className="text-2xl font-black leading-none">{session.kidCount}</span>
+              <span className="text-xs font-bold">{session.kidCount === 1 ? "Kid" : "Kids"}</span>
+            </div>
+          </>
+        );
+        return onShowInvoice && !session.isManual ? (
+          <button
+            type="button"
+            onClick={() => onShowInvoice(session)}
+            title={`See what's on ${session.invoiceNumber}`}
+            className="mb-1.5 flex w-full items-start gap-2 text-left"
+          >
+            {header}
+          </button>
+        ) : (
+          <div className="mb-1.5 flex items-start gap-2">{header}</div>
+        );
+      })()}
 
       {/* Badges: membership marker + amount due (partial payments show the remainder) */}
       {((session.isMembership && status !== "checked_out") ||
