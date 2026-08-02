@@ -7,7 +7,9 @@ Staff-only counter for PlayPanda memberships (same password as `/ops`).
 1. Customer picks a plan and pays — **unchanged**.
 2. Manager bills the membership sale in Swipe — **unchanged** (products
    "Fun Five Pass", "Panda Pro 12", "Panda Max 25", "Supervised Play Pass").
-3. Manager records the membership on **`/members`** (phone number + plan;
+3. Manager records the membership on **`/members/new`** — no lookup needed
+   first; typing the phone prefills the customer's name and kids from Swipe
+   (phone number + plan;
    fixed plans are one tap, custom plans set their own plays/hours/validity
    but map to an existing Swipe punch product). The **sale invoice is picked
    from a list of today's Swipe membership sales**, not typed — a fixed plan
@@ -70,13 +72,18 @@ no migration step.
 5. Create the tabs + headers: `npx tsx scripts/setup-sheets.ts`
 
 The mirror is fire-and-forget: if Sheets is down or unconfigured, the counter
-keeps working and rows simply don't mirror (they're always in Postgres and
-downloadable as CSV from `/members/list`).
+keeps working and rows simply don't mirror (they're always in Postgres, and
+`/api/members/export?what=memberships|visits` still returns CSV on demand).
 
 ## Pages & API
 
-- `/members` — lookup by phone, punch visits, record memberships
-- `/members/list` — full ledger + **Members CSV** / **Visits CSV** downloads
+Punching and creating are deliberately separate pages: punching needs a
+lookup, creating does not.
+
+- `/members` — **Punch a visit**: look up by phone, see plays left, punch
+- `/members/new` — **New membership**: standalone form, no lookup required
+- `/members/list` — **All members**: full ledger. No download buttons; for a
+  bulk export use the Google Sheet, or hit `/api/members/export` (see below).
 - `GET /api/members/lookup?phone=` · `POST /api/members/create` ·
   `POST /api/members/visit` · `GET /api/members/sale-invoices` ·
   `GET /api/members/export?what=memberships|visits`

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { Membership } from "@/lib/members/types";
+import { useRouter } from "next/navigation";
 import { normalizePhone } from "@/lib/members/types";
 import { addMonths, MEMBERSHIP_PLANS, PUNCH_PRODUCTS } from "@/lib/members/plans";
 
@@ -17,13 +17,9 @@ interface SaleInvoiceOption {
   linked: boolean;
 }
 
-interface NewMembershipSheetProps {
-  open: boolean;
-  onClose: () => void;
-  onCreated: (membership: Membership) => void;
-  initialPhone: string;
-  initialName: string;
-  initialKids: string;
+interface MembershipFormProps {
+  /** Optional starting phone, e.g. arriving from the counter's lookup. */
+  initialPhone?: string;
 }
 
 const inputClass =
@@ -48,22 +44,17 @@ const timeIST = (ms: number) =>
   });
 
 /**
- * Record a membership the customer just bought. The sale invoice is billed
- * manually in Swipe exactly as before — this form only records the membership
- * so visits can be tracked and punched. Custom plans set their own plays/hours
- * but must map to one of the existing Swipe punch products.
+ * Record a membership the customer just bought. Standalone — the manager does
+ * NOT have to look anyone up first. The sale invoice is billed manually in
+ * Swipe exactly as before; this form only records the membership so visits can
+ * be tracked and punched. Custom plans set their own plays/hours but must map
+ * to one of the existing Swipe punch products.
  */
-export default function NewMembershipSheet({
-  open,
-  onClose,
-  onCreated,
-  initialPhone,
-  initialName,
-  initialKids,
-}: NewMembershipSheetProps) {
+export default function MembershipForm({ initialPhone = "" }: MembershipFormProps) {
+  const router = useRouter();
   const [phone, setPhone] = useState(initialPhone);
-  const [customerName, setCustomerName] = useState(initialName);
-  const [kidNames, setKidNames] = useState(initialKids);
+  const [customerName, setCustomerName] = useState("");
+  const [kidNames, setKidNames] = useState("");
   const [planKey, setPlanKey] = useState<string>(MEMBERSHIP_PLANS[0].key);
   const [saleInvoice, setSaleInvoice] = useState("");
   const [startsOn, setStartsOn] = useState(todayIST());
@@ -90,26 +81,35 @@ export default function NewMembershipSheet({
   // Armed after the duplicate warning; the next submit forces.
   const forceArmed = useRef(false);
 
-  // Re-prefill whenever the sheet opens for a (possibly different) customer.
+  // Once a full number is typed, pull the customer's name and kids from Swipe
+  // so the manager doesn't retype what billing already knows. Fills blanks only
+  // — anything already typed wins.
   useEffect(() => {
-    if (open) {
-      setPhone(initialPhone);
-      setCustomerName(initialName);
-      setKidNames(initialKids);
-      setError(null);
-      setNotice(null);
-      forceArmed.current = false;
-    }
-  }, [open, initialPhone, initialName, initialKids]);
+    const p = normalizePhone(phone);
+    if (p.length !== 10) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/members/lookup?phone=${p}`, { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json()) as { customer?: { name: string; kidNames: string[] } | null };
+        if (cancelled || !data.customer) return;
+        setCustomerName((cur) => cur.trim() || data.customer!.name || "");
+        setKidNames((cur) => cur.trim() || (data.customer!.kidNames ?? []).join(", "));
+      } catch {
+        // Prefill is a convenience; typing by hand still works.
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [phone]);
 
   // Load today's membership sales so the manager picks the invoice they just
   // billed rather than typing its number.
   useEffect(() => {
-    if (!open) return;
     let cancelled = false;
-    setSaleOptions(null);
-    setSalesError(null);
-    setManualInvoice(false);
 
     (async () => {
       try {
@@ -136,9 +136,7 @@ export default function NewMembershipSheet({
     return () => {
       cancelled = true;
     };
-  }, [open]);
-
-  if (!open) return null;
+  }, []);
 
   const isCustom = planKey === "custom";
   const fixedPlan = MEMBERSHIP_PLANS.find((p) => p.key === planKey);
@@ -227,34 +225,18 @@ export default function NewMembershipSheet({
       if (!res.ok || !data.membership) {
         throw new Error(data.error || "Couldn't save — please try again");
       }
-      onCreated(data.membership as Membership);
+      // Hand the manager straight to the counter for this member, where the
+      // new membership is listed and ready to punch.
+      router.push(`/members?phone=${normalizePhone(phone)}&created=1`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't save — please try again");
-    } finally {
       setSaving(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center">
-      <div className="absolute inset-0 bg-ink/40" onClick={onClose} />
-
-      <div className="relative mx-4 flex max-h-[92dvh] w-full max-w-md flex-col rounded-t-chunk bg-cream shadow-chunk sm:rounded-chunk">
-        <div className="flex items-center justify-between px-6 pb-2 pt-6">
-          <h2 className="text-xl font-black text-ink">New membership</h2>
-          <button
-            onClick={onClose}
-            className="text-2xl leading-none text-ink/40 hover:text-ink"
-            aria-label="Close"
-          >
-            &times;
-          </button>
-        </div>
-        <p className="px-6 text-sm font-bold text-ink/60">
-          Bill the sale in Swipe as usual — this records the membership for visit tracking.
-        </p>
-
-        <form onSubmit={submit} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 pb-6 pt-4">
+    <div className="mx-auto w-full max-w-xl">
+      <form onSubmit={submit} className="space-y-4 rounded-chunk bg-white p-5 shadow-chunk">
           <div>
             <label className={labelClass}>Phone number *</label>
             <input
@@ -609,8 +591,7 @@ export default function NewMembershipSheet({
           >
             {saving ? "Saving…" : "Save membership"}
           </button>
-        </form>
-      </div>
+      </form>
     </div>
   );
 }

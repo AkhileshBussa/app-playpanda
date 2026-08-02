@@ -59,27 +59,11 @@ export default async function MembersListPage() {
       <OpsNav />
       <main className="mx-auto flex w-full max-w-6xl flex-col px-5 pb-16 pt-6">
         {/* The nav and section tab already name this; heading stays for screen readers. */}
-        <header className="flex flex-col items-center gap-3 text-center">
-          <div>
-            <h1 className="sr-only">All members</h1>
-            <p className="text-sm font-bold text-ink/60">
-              Every membership, newest first · plays left &amp; expiry
-            </p>
-          </div>
-          <div className="flex flex-wrap justify-center gap-2">
-            <a
-              href="/api/members/export?what=memberships"
-              className="rounded-full bg-white px-3.5 py-2 text-xs font-black text-ink/70 shadow-[0_2px_0_rgba(0,0,0,0.06)]"
-            >
-              ⬇ Members CSV
-            </a>
-            <a
-              href="/api/members/export?what=visits"
-              className="rounded-full bg-white px-3.5 py-2 text-xs font-black text-ink/70 shadow-[0_2px_0_rgba(0,0,0,0.06)]"
-            >
-              ⬇ Visits CSV
-            </a>
-          </div>
+        <header className="text-center">
+          <h1 className="sr-only">All members</h1>
+          <p className="text-sm font-bold text-ink/60">
+            Every membership, newest first · plays left &amp; expiry
+          </p>
         </header>
 
         <div className="mt-4 flex justify-center">

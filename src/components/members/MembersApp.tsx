@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import type { Membership, MembershipStatus, MembershipVisit } from "@/lib/members/types";
 import { normalizePhone } from "@/lib/members/types";
 import MembersTabs from "./MembersTabs";
-import NewMembershipSheet from "./NewMembershipSheet";
 import RecordVisitSheet from "./RecordVisitSheet";
 
 /** Membership as the lookup API returns it — with computed status + visits. */
@@ -53,9 +53,9 @@ export default function MembersApp() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [result, setResult] = useState<LookupResult | null>(null);
-  const [showNew, setShowNew] = useState(false);
   const [visitFor, setVisitFor] = useState<ApiMembership | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const searchRef = useRef<((p: string) => void) | null>(null);
 
   const lookup = useCallback(async (rawPhone: string): Promise<LookupResult | null> => {
     const p = normalizePhone(rawPhone);
@@ -69,25 +69,46 @@ export default function MembersApp() {
     return data as LookupResult;
   }, []);
 
-  const search = async (e?: React.FormEvent) => {
+  const runSearch = useCallback(
+    async (rawPhone: string) => {
+      const p = normalizePhone(rawPhone);
+      if (!/^\d{10}$/.test(p)) {
+        setError("Enter a 10-digit phone number");
+        return;
+      }
+      setSearching(true);
+      setError(null);
+      try {
+        const data = await lookup(p);
+        if (data) setResult(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Couldn't look that up — please try again");
+      } finally {
+        setSearching(false);
+      }
+    },
+    [lookup]
+  );
+  searchRef.current = runSearch;
+
+  const search = (e?: React.FormEvent) => {
     e?.preventDefault();
-    const p = normalizePhone(phone);
-    if (!/^\d{10}$/.test(p)) {
-      setError("Enter a 10-digit phone number");
-      return;
-    }
-    setSearching(true);
-    setError(null);
     setNotice(null);
-    try {
-      const data = await lookup(p);
-      if (data) setResult(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't look that up — please try again");
-    } finally {
-      setSearching(false);
-    }
+    runSearch(phone);
   };
+
+  // Arriving from the new-membership form (?phone=…&created=1): show that
+  // member straight away so the counter is ready to punch.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const p = normalizePhone(params.get("phone") ?? "");
+    if (!/^\d{10}$/.test(p)) return;
+    setPhone(p);
+    if (params.get("created")) setNotice("Membership saved — ready to punch a visit.");
+    searchRef.current?.(p);
+    // Drop the params so a refresh doesn't replay the "saved" notice.
+    window.history.replaceState({}, "", "/members");
+  }, []);
 
   /** Silent re-fetch after a create/punch so counts reconcile with the server. */
   const refresh = useCallback(async () => {
@@ -295,14 +316,14 @@ export default function MembersApp() {
             );
           })}
 
-          {/* Sits in the grid as an "empty slot" tile next to the real cards. */}
-          <button
-            type="button"
-            onClick={() => setShowNew(true)}
-            className="rounded-chunk border-2 border-dashed border-teal/50 bg-teal/5 px-4 py-3.5 text-base font-black text-teal transition-all active:translate-y-0.5 sm:min-h-[11rem]"
+          {/* Convenience hop to the create form, carrying the number across —
+              creating doesn't require a lookup, this just saves retyping. */}
+          <Link
+            href={`/members/new?phone=${result.phone}`}
+            className="flex items-center justify-center rounded-chunk border-2 border-dashed border-teal/50 bg-teal/5 px-4 py-3.5 text-center text-base font-black text-teal transition-all active:translate-y-0.5 sm:min-h-[11rem]"
           >
             + New membership on this number
-          </button>
+          </Link>
           </div>
         </div>
       )}
@@ -313,19 +334,6 @@ export default function MembersApp() {
         </p>
       )}
 
-      {/* Sheets */}
-      <NewMembershipSheet
-        open={showNew}
-        onClose={() => setShowNew(false)}
-        initialPhone={result?.phone ?? normalizePhone(phone)}
-        initialName={result?.customer?.name ?? ""}
-        initialKids={result?.customer?.kidNames.join(", ") ?? ""}
-        onCreated={(m) => {
-          setShowNew(false);
-          setNotice(`${m.planName} added for ${m.customerName} — expires ${prettyDate(m.expiresOn)}.`);
-          refresh();
-        }}
-      />
       {visitFor && (
         <RecordVisitSheet
           open
