@@ -19,6 +19,7 @@ import type {
   CustomerProfile,
   DaySales,
   InvoiceLine,
+  MembershipPunchInput,
   RecordPaymentInput,
   TodaySession,
 } from "./types";
@@ -40,6 +41,13 @@ const CHILD_FIELD_IDS = ["3", "5", "7", "9"] as const;
  * and read back on the confirmation screen.
  */
 const VALIDATION_CODE_HEADER = { headerId: 1, name: "Validation Code" } as const;
+/**
+ * Item custom columns in this Swipe account. Written on membership-punch lines
+ * so the ops monitor reads the right per-play duration ("Number of Hours") and
+ * the invoice mirrors what the counter fills in manually ("Number of Plays").
+ */
+const ITEM_COL_HOURS = { id: 12, name: "Number of Hours" } as const;
+const ITEM_COL_PLAYS = { id: 13, name: "Number of Plays" } as const;
 
 class SwipeError extends Error {
   constructor(message: string, readonly status: number, readonly body: unknown) {
@@ -329,50 +337,49 @@ interface SwipeRef {
   partyId: number | null;
 }
 
-async function createSwipeInvoice(
-  input: CreateBookingInput,
-  customerId: number | null
-): Promise<{ invoiceNumber: string; docCount: number }> {
+/** Everything that varies between invoice documents (bookings vs punches). */
+interface InvoiceDocOpts {
+  docNumber: number;
+  serialNumber: string;
+  items: ReturnType<typeof toSwipeItem>[];
+  totalAmount: number;
+  taxAmount: number;
+  netAmount: number;
+  partyId: number | null;
+  notes: string;
+  reference: string;
+  documentCustomHeaders: Array<{ header_id: number; value: string }>;
+}
+
+/** The full v3/doc/create payload — shared by bookings and membership punches. */
+function buildInvoiceDoc(opts: InvoiceDocOpts): Record<string, unknown> {
   const date = swipeDateToday();
-  const items = input.lines.map(toSwipeItem);
-  const totalAmount = round2(items.reduce((s, i) => s + i.total_amount, 0));
-  const netAmount = round2(items.reduce((s, i) => s + i.net_amount, 0));
-  const taxAmount = round2(totalAmount - netAmount);
-
-  // The validation code lives ONLY in the document custom header (below). Notes
-  // just carry the kids' names for the counter; reference is a plain label.
-  const kids = input.customer.kidNames.filter(Boolean);
-  const reference = "Play Panda booking";
-  const notes = kids.length ? `Kids: ${kids.join(", ")}` : "";
-
-  const { docNumber, serialNumber } = await getNextInvoiceSerial();
-
-  const build = (docNo: number, serial: string): Record<string, unknown> => ({
+  return {
     id: -1,
     project_id: -1,
     document_type: "invoice",
     invoice_type: "b2b",
     source: 0,
-    doc_number: docNo,
+    doc_number: opts.docNumber,
     suffix: "",
-    serial_number: serial,
+    serial_number: opts.serialNumber,
     document_title: "Invoice",
     doc_without_items: 0,
     party_details: {},
     send_pos_sms: 0,
-    party_ids: customerId != null ? [customerId] : [],
+    party_ids: opts.partyId != null ? [opts.partyId] : [],
     ecommerce_gstin: "",
     ecommerce_name: "",
     document_date: date,
     due_date: date,
-    items,
+    items: opts.items,
     warehouse_id: -1,
-    total_amount: totalAmount,
-    tax_amount: taxAmount,
+    total_amount: opts.totalAmount,
+    tax_amount: opts.taxAmount,
     cess_amount: 0,
     cess_on_qty_value: 0,
     extra_discount: 0,
-    net_amount: netAmount,
+    net_amount: opts.netAmount,
     total_discount: 0,
     discount_type: "total_amount",
     roundoff: 1,
@@ -383,8 +390,8 @@ async function createSwipeInvoice(
     start_subscription_on_payment: 1,
     bank_id: DEFAULT_BANK_ID,
     terms: "",
-    notes,
-    reference,
+    notes: opts.notes,
+    reference: opts.reference,
     is_draft: false,
     is_pos: false,
     skip_warning: false,
@@ -440,22 +447,28 @@ async function createSwipeInvoice(
     document_custom_additional_charges: [],
     document_item_headers: [],
     attachments: [],
-    document_custom_headers: [
-      { header_id: VALIDATION_CODE_HEADER.headerId, value: input.validationCode },
-    ],
+    document_custom_headers: opts.documentCustomHeaders,
     payments: [],
     price_list_id: 0,
     waiting_for_approval: false,
     is_shopify: false,
-  });
+  };
+}
 
-  // The suggested serial can collide (numbering drift / concurrent bookings);
-  // Swipe returns a warning with the correct next number, so retry with it.
-  let res = await swipeCall<CreateResp>("v3/doc", "create", build(docNumber, serialNumber), {
+/**
+ * Create the doc, retrying when the optimistic serial collides (numbering
+ * drift / concurrent bookings) — Swipe returns a warning with the correct next
+ * number, so rebuild with it and try again.
+ */
+async function createDocWithRetry(
+  initial: { docNumber: number; serialNumber: string },
+  build: (docNo: number, serial: string) => Record<string, unknown>
+): Promise<CreateResp> {
+  let res = await swipeCall<CreateResp>("v3/doc", "create", build(initial.docNumber, initial.serialNumber), {
     allowFailure: true,
   });
   for (let tries = 0; res.success === false && res.warning && res.new_serial_number && tries < 4; tries++) {
-    const retry = build(Number(res.new_doc_number) || docNumber, res.new_serial_number);
+    const retry = build(Number(res.new_doc_number) || initial.docNumber, res.new_serial_number);
     retry.skip_warning = true;
     res = await swipeCall<CreateResp>("v3/doc", "create", retry, { allowFailure: true });
   }
@@ -466,10 +479,91 @@ async function createSwipeInvoice(
   }
   const hashId = res.new_hash_id || res.hash_id;
   if (!hashId) throw new Error(`Swipe create did not return a document id: ${JSON.stringify(res)}`);
+  return res;
+}
+
+async function createSwipeInvoice(
+  input: CreateBookingInput,
+  customerId: number | null
+): Promise<{ invoiceNumber: string; docCount: number }> {
+  const items = input.lines.map(toSwipeItem);
+  const totalAmount = round2(items.reduce((s, i) => s + i.total_amount, 0));
+  const netAmount = round2(items.reduce((s, i) => s + i.net_amount, 0));
+  const taxAmount = round2(totalAmount - netAmount);
+
+  // The validation code lives ONLY in the document custom header. Notes just
+  // carry the kids' names for the counter; reference is a plain label.
+  const kids = input.customer.kidNames.filter(Boolean);
+
+  const initial = await getNextInvoiceSerial();
+  const res = await createDocWithRetry(initial, (docNo, serial) =>
+    buildInvoiceDoc({
+      docNumber: docNo,
+      serialNumber: serial,
+      items,
+      totalAmount,
+      taxAmount,
+      netAmount,
+      partyId: customerId,
+      notes: kids.length ? `Kids: ${kids.join(", ")}` : "",
+      reference: "Play Panda booking",
+      documentCustomHeaders: [
+        { header_id: VALIDATION_CODE_HEADER.headerId, value: input.validationCode },
+      ],
+    })
+  );
   return {
-    invoiceNumber: res.serial_number || serialNumber,
+    invoiceNumber: res.serial_number || initial.serialNumber,
     docCount: Number(res.doc_count ?? 0),
   };
+}
+
+/**
+ * Membership visit → ₹0 invoice with the plan's punch product. quantity =
+ * plays consumed. The hour/play custom columns are written per-line so the ops
+ * monitor times the session correctly even for custom plans (whose hours
+ * differ from the punch product's defaults).
+ */
+async function createMembershipPunchInvoice(
+  input: MembershipPunchInput,
+  partyId: number | null
+): Promise<{ invoiceNumber: string }> {
+  const line: InvoiceLine = {
+    sku: input.punch.sku,
+    name: input.punch.name,
+    itemType: "Service",
+    quantity: input.punch.quantity,
+    taxRatePercent: input.punch.taxRatePercent,
+    priceWithTax: 0,
+  };
+  const item = {
+    ...toSwipeItem(line),
+    item_custom_columns: [
+      { id: ITEM_COL_HOURS.id, name: ITEM_COL_HOURS.name, value: String(input.punch.hoursPerPlay) },
+      {
+        id: ITEM_COL_PLAYS.id,
+        name: ITEM_COL_PLAYS.name,
+        value: input.punch.totalPlays == null ? "" : String(input.punch.totalPlays),
+      },
+    ],
+  };
+
+  const initial = await getNextInvoiceSerial();
+  const res = await createDocWithRetry(initial, (docNo, serial) =>
+    buildInvoiceDoc({
+      docNumber: docNo,
+      serialNumber: serial,
+      items: [item],
+      totalAmount: 0,
+      taxAmount: 0,
+      netAmount: 0,
+      partyId,
+      notes: input.notes ?? "",
+      reference: "Play Panda membership visit",
+      documentCustomHeaders: [],
+    })
+  );
+  return { invoiceNumber: res.serial_number || initial.serialNumber };
 }
 
 // ── Session monitor ──────────────────────────────────────────────────────────
@@ -880,6 +974,11 @@ export const swipeBilling: BillingProvider = {
         },
       ],
     });
+  },
+
+  async createMembershipPunch(input: MembershipPunchInput): Promise<{ invoiceNumber: string }> {
+    const partyId = await ensureCustomer(input.customer);
+    return createMembershipPunchInvoice(input, partyId);
   },
 
   async listTodaySessions(): Promise<TodaySession[]> {

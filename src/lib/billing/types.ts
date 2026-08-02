@@ -56,6 +56,29 @@ export interface RecordPaymentInput {
   transactionRef?: string;
 }
 
+/**
+ * One membership visit to punch as a ₹0 invoice. The punch product is what the
+ * counter already bills manually for membership visits; quantity = plays
+ * consumed (extra kids on one visit consume extra plays).
+ */
+export interface MembershipPunchInput {
+  customer: BookingCustomer;
+  punch: {
+    /** Generic punch product id; the adapter maps it to its own catalog. */
+    sku: string;
+    name: string;
+    taxRatePercent: number;
+    /** Plays consumed by this visit. */
+    quantity: number;
+    /** Per-play duration — drives the session timer on the ops monitor. */
+    hoursPerPlay: number;
+    /** The plan's total plays (informational on the invoice line); null = unlimited. */
+    totalPlays: number | null;
+  };
+  /** Free-text note for the counter (plan name, kids, etc.). */
+  notes?: string;
+}
+
 /** Returning-customer details, for prefilling the booking form. */
 export interface CustomerProfile {
   name: string;
@@ -149,6 +172,12 @@ export interface BillingProvider {
 
   /** Record a collected payment against the booking (marks the invoice paid). */
   recordPayment(input: RecordPaymentInput): Promise<void>;
+
+  /**
+   * Punch one membership visit: upsert the customer and create the ₹0 invoice
+   * with the punch product. Shows up on the ops monitor as a membership session.
+   */
+  createMembershipPunch(input: MembershipPunchInput): Promise<{ invoiceNumber: string }>;
 
   /**
    * All play sessions from today's invoices, for the ops session monitor.
