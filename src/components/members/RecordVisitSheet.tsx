@@ -15,6 +15,14 @@ interface RecordVisitSheetProps {
 const inputClass =
   "w-full rounded-2xl border-2 border-ink/10 bg-cream/60 px-4 py-3 text-base font-bold text-ink outline-none placeholder:font-bold placeholder:text-ink/30 focus:border-coral";
 
+const prettyDate = (d: string) =>
+  new Date(`${d}T12:00:00+05:30`).toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "Asia/Kolkata",
+  });
+
 /**
  * Punch one visit against a membership: pick how many kids are going in,
  * see exactly how many plays that uses, confirm. The server deducts plays
@@ -93,8 +101,17 @@ export default function RecordVisitSheet({
             &times;
           </button>
         </div>
-        <p className="mb-5 text-sm font-bold text-ink/60">
+        {/* Two memberships can share a plan name (a renewal on top of an
+            unfinished pass), so spell out which one this is before punching. */}
+        <p className="text-sm font-bold text-ink/60">
           {membership.planName} · {membership.customerName}
+        </p>
+        <p className="mb-5 text-sm font-black text-ink/70">
+          {membership.playsLeft == null
+            ? "Unlimited · once a day"
+            : `${membership.playsLeft} of ${membership.totalPlays} plays left`}
+          {" · expires "}
+          {prettyDate(membership.expiresOn)}
         </p>
 
         <form onSubmit={submit} className="space-y-4">

@@ -3,9 +3,22 @@ import { isOpsAuthed } from "@/lib/ops/auth";
 import { todayIST } from "@/lib/ops/state";
 import { billing } from "@/lib/billing";
 import { listMembershipsByPhone, listVisits, membersDbConfigured } from "@/lib/members/db";
-import { membershipStatus, normalizePhone, playsLeft } from "@/lib/members/types";
+import {
+  membershipStatus,
+  normalizePhone,
+  playsLeft,
+  type MembershipStatus,
+} from "@/lib/members/types";
 
 export const dynamic = "force-dynamic";
+
+/** Punchable first, then spent, then gone. */
+const STATUS_RANK: Record<MembershipStatus, number> = {
+  active: 0,
+  exhausted: 1,
+  expired: 2,
+  deleted: 3,
+};
 
 /**
  * Counter lookup: all memberships (with visits + plays left) for a phone
@@ -46,6 +59,25 @@ export async function GET(req: Request) {
         visits: await listVisits(m.id),
       }))
     );
+
+    // Order for the counter, not for the archive: the membership that should
+    // be burned first comes first. Usable ones lead, soonest expiry at the top
+    // (use-it-or-lose-it), then the ones with least left; everything spent or
+    // gone sinks below, newest first.
+    detailed.sort((a, b) => {
+      if (STATUS_RANK[a.status] !== STATUS_RANK[b.status]) {
+        return STATUS_RANK[a.status] - STATUS_RANK[b.status];
+      }
+      if (a.status === "active") {
+        const byExpiry = a.expiresOn.localeCompare(b.expiresOn);
+        if (byExpiry !== 0) return byExpiry;
+        // Unlimited passes have nothing to run out, so they yield to counted ones.
+        const aLeft = a.playsLeft ?? Number.MAX_SAFE_INTEGER;
+        const bLeft = b.playsLeft ?? Number.MAX_SAFE_INTEGER;
+        if (aLeft !== bLeft) return aLeft - bLeft;
+      }
+      return b.createdAt - a.createdAt;
+    });
 
     return NextResponse.json({ phone, customer, memberships: detailed });
   } catch (err) {
