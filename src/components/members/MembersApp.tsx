@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import Image from "next/image";
 import type { Membership, MembershipStatus, MembershipVisit } from "@/lib/members/types";
 import { normalizePhone } from "@/lib/members/types";
 import MembersTabs from "./MembersTabs";
@@ -103,13 +102,10 @@ export default function MembersApp() {
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col px-5 pb-16 pt-6">
-      {/* Header */}
-      <header className="flex flex-col items-center text-center">
-        <div className="flex items-center gap-2">
-          <h1 className="text-2xl font-black leading-tight text-ink">Memberships</h1>
-          <Image src="/MascotWithoutBG.png" alt="" width={60} height={80} className="h-14 w-auto" />
-        </div>
-        <p className="mt-1 text-sm font-bold text-ink/60">
+      {/* The nav already names the tool; keep the heading for screen readers. */}
+      <header className="text-center">
+        <h1 className="sr-only">Memberships</h1>
+        <p className="text-sm font-bold text-ink/60">
           Look up a member, punch visits, add new members
         </p>
       </header>

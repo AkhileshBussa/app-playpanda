@@ -192,11 +192,9 @@ export default function OpsDashboard() {
       {/* Header */}
       <header className="sticky top-0 z-10 border-b-2 border-ink/5 bg-cream/95 backdrop-blur">
         <div className="flex flex-col items-center px-4 py-3">
-          <h1 className="flex items-center gap-2 text-2xl font-black text-ink">
-            <Image src="/LogoWithoutBG.png" alt="" width={76} height={40} className="h-10 w-auto" />
-            <span>Session Monitor</span>
-          </h1>
-          <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+          {/* The nav already names the tool; keep the heading for screen readers. */}
+          <h1 className="sr-only">Session Monitor</h1>
+          <div className="flex flex-wrap items-center justify-center gap-2">
             <StatBadge label="Waiting" count={counts.waiting} className="bg-purple/15 text-purple" />
             <StatBadge label="Active" count={counts.active} className="bg-green/15 text-green" />
             <StatBadge label="Expiring" count={counts.expiring} className="bg-yellow/25 text-brown" />

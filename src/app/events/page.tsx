@@ -19,11 +19,10 @@ export default async function EventsPage() {
     <>
       <OpsNav />
       <main className="mx-auto flex w-full max-w-6xl flex-col px-5 pb-16 pt-6">
+        {/* The nav already names the tool; keep the heading for screen readers. */}
         <header className="text-center">
-          <h1 className="text-2xl font-black leading-tight text-ink">Events</h1>
-          <p className="mt-1 text-sm font-bold text-ink/60">
-            Parties, group visits and bookings
-          </p>
+          <h1 className="sr-only">Events</h1>
+          <p className="text-sm font-bold text-ink/60">Parties, group visits and bookings</p>
         </header>
 
         <div className="mt-6 rounded-chunk bg-white p-8 text-center shadow-chunk">

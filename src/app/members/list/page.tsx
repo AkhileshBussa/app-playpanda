@@ -58,10 +58,11 @@ export default async function MembersListPage() {
     <>
       <OpsNav />
       <main className="mx-auto flex w-full max-w-6xl flex-col px-5 pb-16 pt-6">
+        {/* The nav and section tab already name this; heading stays for screen readers. */}
         <header className="flex flex-col items-center gap-3 text-center">
           <div>
-            <h1 className="text-2xl font-black leading-tight text-ink">All members</h1>
-            <p className="mt-1 text-sm font-bold text-ink/60">
+            <h1 className="sr-only">All members</h1>
+            <p className="text-sm font-bold text-ink/60">
               Every membership, newest first · plays left &amp; expiry
             </p>
           </div>
