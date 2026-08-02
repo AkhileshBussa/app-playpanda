@@ -97,11 +97,8 @@ export default function MembershipDetail({ membership, visits, today }: Membersh
 
   return (
     <div className="mx-auto w-full max-w-3xl">
-      <Link
-        href="/members"
-        className="text-sm font-black text-teal underline underline-offset-2"
-      >
-        ← Back to the counter
+      <Link href="/members" className="text-sm font-black text-teal underline underline-offset-2">
+        ← Back
       </Link>
 
       {notice && (
