@@ -58,14 +58,14 @@ export default async function MembersListPage() {
     <>
       <OpsNav />
       <main className="mx-auto flex w-full max-w-6xl flex-col px-5 pb-16 pt-6">
-        <header className="flex flex-wrap items-start justify-between gap-3">
+        <header className="flex flex-col items-center gap-3 text-center">
           <div>
             <h1 className="text-2xl font-black leading-tight text-ink">All members</h1>
             <p className="mt-1 text-sm font-bold text-ink/60">
               Every membership, newest first · plays left &amp; expiry
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap justify-center gap-2">
             <a
               href="/api/members/export?what=memberships"
               className="rounded-full bg-white px-3.5 py-2 text-xs font-black text-ink/70 shadow-[0_2px_0_rgba(0,0,0,0.06)]"
@@ -81,11 +81,11 @@ export default async function MembersListPage() {
           </div>
         </header>
 
-        <div className="mt-4">
+        <div className="mt-4 flex justify-center">
           <MembersTabs />
         </div>
 
-        <div className="mt-4 flex flex-wrap items-center gap-2">
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
           <span className="rounded-full bg-teal px-3 py-1 text-sm font-black text-cream">
             {rows.length} member{rows.length === 1 ? "" : "s"}
           </span>

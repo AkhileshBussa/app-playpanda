@@ -103,24 +103,26 @@ export default function MembersApp() {
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col px-5 pb-16 pt-6">
-      {/* Header — capped to the search column so the mascot stays beside the
-          title instead of drifting to the far edge of a wide screen. */}
-      <header className="flex w-full max-w-2xl items-start justify-between gap-3">
-        <div>
+      {/* Header */}
+      <header className="flex flex-col items-center text-center">
+        <div className="flex items-center gap-2">
           <h1 className="text-2xl font-black leading-tight text-ink">Memberships</h1>
-          <p className="mt-1 text-sm font-bold text-ink/60">
-            Look up a member, punch visits, add new members
-          </p>
+          <Image src="/MascotWithoutBG.png" alt="" width={60} height={80} className="h-14 w-auto" />
         </div>
-        <Image src="/MascotWithoutBG.png" alt="" width={60} height={80} className="h-16 w-auto" />
+        <p className="mt-1 text-sm font-bold text-ink/60">
+          Look up a member, punch visits, add new members
+        </p>
       </header>
 
-      <div className="mt-3">
+      <div className="mt-3 flex justify-center">
         <MembersTabs />
       </div>
 
       {/* Search — capped so the input doesn't stretch across a wide screen. */}
-      <form onSubmit={search} className="mt-4 rounded-chunk bg-white p-4 shadow-chunk lg:max-w-2xl">
+      <form
+        onSubmit={search}
+        className="mx-auto mt-4 w-full rounded-chunk bg-white p-4 shadow-chunk lg:max-w-2xl"
+      >
         <label className="mb-1 block px-1 text-sm font-bold uppercase tracking-widest text-ink/50">
           Member phone number
         </label>

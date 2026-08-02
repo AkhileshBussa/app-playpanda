@@ -19,7 +19,7 @@ export default async function EventsPage() {
     <>
       <OpsNav />
       <main className="mx-auto flex w-full max-w-6xl flex-col px-5 pb-16 pt-6">
-        <header>
+        <header className="text-center">
           <h1 className="text-2xl font-black leading-tight text-ink">Events</h1>
           <p className="mt-1 text-sm font-bold text-ink/60">
             Parties, group visits and bookings
