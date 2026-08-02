@@ -79,6 +79,23 @@ export interface MembershipPunchInput {
   notes?: string;
 }
 
+/**
+ * A membership SALE invoice from today — what the manager billed at the
+ * counter before recording the membership. Offered as a pick-list so the sale
+ * reference is chosen, not typed.
+ */
+export interface MembershipSaleInvoice {
+  invoiceNumber: string;
+  customerName: string;
+  phone: string;
+  /** Invoice grand total, INR (may include socks etc., not just the plan). */
+  amount: number;
+  /** When the invoice was created, unix ms. */
+  at: number;
+  /** The membership-plan lines on this invoice. */
+  planLines: Array<{ sku: string; name: string; quantity: number }>;
+}
+
 /** Returning-customer details, for prefilling the booking form. */
 export interface CustomerProfile {
   name: string;
@@ -178,6 +195,12 @@ export interface BillingProvider {
    * with the punch product. Shows up on the ops monitor as a membership session.
    */
   createMembershipPunch(input: MembershipPunchInput): Promise<{ invoiceNumber: string }>;
+
+  /**
+   * Today's invoices carrying a membership-plan (sale) line, newest first —
+   * the pick-list for linking a membership to the sale it was billed on.
+   */
+  listTodayMembershipSales(): Promise<MembershipSaleInvoice[]>;
 
   /**
    * All play sessions from today's invoices, for the ops session monitor.

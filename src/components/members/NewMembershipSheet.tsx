@@ -2,7 +2,20 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Membership } from "@/lib/members/types";
+import { normalizePhone } from "@/lib/members/types";
 import { addMonths, MEMBERSHIP_PLANS, PUNCH_PRODUCTS } from "@/lib/members/plans";
+
+/** Today's membership sale invoices, as the pick-list API returns them. */
+interface SaleInvoiceOption {
+  invoiceNumber: string;
+  customerName: string;
+  phone: string;
+  amount: number;
+  at: number;
+  planLines: Array<{ sku: string; name: string; quantity: number }>;
+  /** Already referenced by another membership — a flag, not a block. */
+  linked: boolean;
+}
 
 interface NewMembershipSheetProps {
   open: boolean;
@@ -25,6 +38,14 @@ const todayIST = () =>
     month: "2-digit",
     day: "2-digit",
   }).format(new Date());
+
+const timeIST = (ms: number) =>
+  new Date(ms).toLocaleTimeString("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Kolkata",
+  });
 
 /**
  * Record a membership the customer just bought. The sale invoice is billed
@@ -61,6 +82,11 @@ export default function NewMembershipSheet({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Today's membership sales from Swipe; null while loading.
+  const [saleOptions, setSaleOptions] = useState<SaleInvoiceOption[] | null>(null);
+  const [salesError, setSalesError] = useState<string | null>(null);
+  /** Typing the number instead of picking (sale billed earlier, or Swipe down). */
+  const [manualInvoice, setManualInvoice] = useState(false);
   // Armed after the duplicate warning; the next submit forces.
   const forceArmed = useRef(false);
 
@@ -76,6 +102,42 @@ export default function NewMembershipSheet({
     }
   }, [open, initialPhone, initialName, initialKids]);
 
+  // Load today's membership sales so the manager picks the invoice they just
+  // billed rather than typing its number.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setSaleOptions(null);
+    setSalesError(null);
+    setManualInvoice(false);
+
+    (async () => {
+      try {
+        const res = await fetch("/api/members/sale-invoices", { cache: "no-store" });
+        if (res.status === 401) {
+          window.location.reload();
+          return;
+        }
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!res.ok || !Array.isArray(data.invoices)) {
+          throw new Error(data.error || "Couldn't load today's invoices");
+        }
+        setSaleOptions(data.invoices as SaleInvoiceOption[]);
+      } catch (err) {
+        if (cancelled) return;
+        // Swipe unreachable — fall back to typing so the form still works.
+        setSaleOptions([]);
+        setSalesError(err instanceof Error ? err.message : "Couldn't load today's invoices");
+        setManualInvoice(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
   if (!open) return null;
 
   const isCustom = planKey === "custom";
@@ -85,6 +147,35 @@ export default function NewMembershipSheet({
     /^\d{4}-\d{2}-\d{2}$/.test(startsOn) && validityMonths > 0
       ? addMonths(startsOn, validityMonths)
       : null;
+
+  // Fixed plans show only the sales carrying that plan's product; a custom
+  // plan has no product of its own, so every membership sale is a candidate.
+  const matchingSales = !saleOptions
+    ? []
+    : isCustom
+      ? saleOptions
+      : saleOptions.filter((s) =>
+          s.planLines.some((l) => l.sku === String(fixedPlan?.saleProductId ?? ""))
+        );
+
+  const selectedSale = matchingSales.find((s) => s.invoiceNumber === saleInvoice);
+  const salePhone = selectedSale ? normalizePhone(selectedSale.phone) : "";
+  // A different billing number usually means the wrong invoice was tapped.
+  const phoneMismatch =
+    salePhone.length === 10 && normalizePhone(phone).length === 10 && salePhone !== normalizePhone(phone);
+
+  /** Switching plan can invalidate the picked invoice, so drop the selection. */
+  const selectPlan = (key: string) => {
+    setPlanKey(key);
+    if (!manualInvoice) setSaleInvoice("");
+  };
+
+  const pickSale = (sale: SaleInvoiceOption) => {
+    const next = saleInvoice === sale.invoiceNumber ? "" : sale.invoiceNumber;
+    setSaleInvoice(next);
+    // Fill the name from the invoice only when it's still blank.
+    if (next && !customerName.trim() && sale.customerName) setCustomerName(sale.customerName);
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -207,7 +298,7 @@ export default function NewMembershipSheet({
                 <button
                   key={p.key}
                   type="button"
-                  onClick={() => setPlanKey(p.key)}
+                  onClick={() => selectPlan(p.key)}
                   className={`flex items-center justify-between rounded-2xl border-2 px-4 py-3 text-left transition-colors ${
                     planKey === p.key
                       ? "border-teal bg-teal/10"
@@ -225,7 +316,7 @@ export default function NewMembershipSheet({
               ))}
               <button
                 type="button"
-                onClick={() => setPlanKey("custom")}
+                onClick={() => selectPlan("custom")}
                 className={`rounded-2xl border-2 px-4 py-3 text-left transition-colors ${
                   isCustom ? "border-teal bg-teal/10" : "border-dashed border-ink/20 bg-white hover:border-ink/30"
                 }`}
@@ -372,26 +463,112 @@ export default function NewMembershipSheet({
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={labelClass}>Starts on</label>
-              <input
-                type="date"
-                value={startsOn}
-                onChange={(e) => setStartsOn(e.target.value)}
-                className={inputClass}
-              />
-            </div>
-            <div>
-              <label className={labelClass}>Sale invoice #</label>
-              <input
-                type="text"
-                value={saleInvoice}
-                onChange={(e) => setSaleInvoice(e.target.value)}
-                placeholder="e.g. INV-1665"
-                className={inputClass}
-              />
-            </div>
+          <div>
+            <label className={labelClass}>Sale invoice</label>
+            {manualInvoice ? (
+              <>
+                <input
+                  type="text"
+                  value={saleInvoice}
+                  onChange={(e) => setSaleInvoice(e.target.value)}
+                  placeholder="e.g. INV-1665"
+                  className={inputClass}
+                />
+                {matchingSales.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setManualInvoice(false);
+                      setSaleInvoice("");
+                    }}
+                    className="mt-2 px-1 text-xs font-black text-teal underline underline-offset-2"
+                  >
+                    Pick from today&apos;s invoices instead
+                  </button>
+                )}
+              </>
+            ) : saleOptions === null ? (
+              <p className="px-1 text-sm font-bold text-ink/40">Loading today&apos;s Swipe invoices…</p>
+            ) : (
+              <>
+                {matchingSales.length === 0 ? (
+                  <p className="rounded-2xl bg-cream px-3 py-2.5 text-sm font-bold text-ink/50">
+                    No membership sale billed today
+                    {isCustom ? "" : ` for ${fixedPlan?.name}`} — bill it in Swipe first, or enter
+                    the number manually.
+                  </p>
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    {matchingSales.map((s) => (
+                      <button
+                        key={s.invoiceNumber}
+                        type="button"
+                        onClick={() => pickSale(s)}
+                        className={`rounded-2xl border-2 px-4 py-3 text-left transition-colors ${
+                          saleInvoice === s.invoiceNumber
+                            ? "border-teal bg-teal/10"
+                            : "border-ink/10 bg-white hover:border-ink/20"
+                        }`}
+                      >
+                        <span className="flex items-baseline justify-between gap-2">
+                          <span className="text-base font-black text-ink">{s.invoiceNumber}</span>
+                          <span className="shrink-0 text-sm font-black text-ink/70">
+                            ₹{s.amount.toLocaleString("en-IN")}
+                          </span>
+                        </span>
+                        <span className="block truncate text-xs font-bold text-ink/50">
+                          {s.customerName || "No name"}
+                          {s.phone && ` · ${s.phone}`} · {timeIST(s.at)}
+                        </span>
+                        <span className="mt-1.5 flex flex-wrap gap-1">
+                          {s.planLines.map((l, i) => (
+                            <span
+                              key={`${l.sku}-${i}`}
+                              className="rounded-full bg-cream px-2 py-0.5 text-[11px] font-black text-ink/60"
+                            >
+                              {l.name}
+                            </span>
+                          ))}
+                          {s.linked && (
+                            <span className="rounded-full bg-yellow/25 px-2 py-0.5 text-[11px] font-black text-brown">
+                              already linked
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setManualInvoice(true)}
+                  className="mt-2 px-1 text-xs font-black text-ink/50 underline underline-offset-2"
+                >
+                  Not listed? Enter it manually
+                </button>
+              </>
+            )}
+            {salesError && (
+              <p className="mt-1 px-1 text-xs font-bold text-coral">
+                {salesError} — enter the number manually.
+              </p>
+            )}
+            {phoneMismatch && selectedSale && (
+              <p className="mt-2 rounded-2xl bg-yellow/25 px-3 py-2 text-sm font-bold text-ink/80">
+                Heads up: {selectedSale.invoiceNumber} is billed to {selectedSale.phone}, not{" "}
+                {normalizePhone(phone)}. Check it&apos;s the right sale.
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className={labelClass}>Starts on</label>
+            <input
+              type="date"
+              value={startsOn}
+              onChange={(e) => setStartsOn(e.target.value)}
+              className={inputClass}
+            />
           </div>
 
           <div>

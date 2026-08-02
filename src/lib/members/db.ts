@@ -198,6 +198,15 @@ export async function listMembershipsByPhone(phone: string): Promise<Membership[
   return rows.map(toMembership);
 }
 
+/** Sale invoice numbers already linked to a membership, for the pick-list. */
+export async function listLinkedSaleInvoices(): Promise<string[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `SELECT DISTINCT sale_invoice_number FROM memberships WHERE sale_invoice_number <> ''`
+  );
+  return rows.map((r) => r.sale_invoice_number as string);
+}
+
 export async function listAllMemberships(): Promise<Membership[]> {
   await ensureSchema();
   const { rows } = await getPool().query(`${MEMBERSHIP_SELECT} ORDER BY m.created_at DESC`);

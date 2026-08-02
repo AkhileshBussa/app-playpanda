@@ -20,6 +20,7 @@ import type {
   DaySales,
   InvoiceLine,
   MembershipPunchInput,
+  MembershipSaleInvoice,
   RecordPaymentInput,
   TodaySession,
 } from "./types";
@@ -573,6 +574,8 @@ async function createMembershipPunchInvoice(
 
 const PLAY_TIME_CATEGORY = "play time";
 const MEMBERSHIP_PUNCH_CATEGORY = "play time - memberships - punch";
+/** The membership PURCHASE category — the sale, not a visit. */
+const MEMBERSHIP_SALE_CATEGORY = "play time - memberships";
 
 /** The "Validation Code" document custom header, or null when absent (walk-in). */
 function readValidationCode(inv: Record<string, unknown>): string | null {
@@ -588,6 +591,8 @@ function readValidationCode(inv: Record<string, unknown>): string | null {
 
 interface SessionItem {
   name: string;
+  /** Swipe product id as a string — matches the `sku` convention in pricing.ts. */
+  sku: string;
   quantity: number;
   category: string;
   /** Line total after discounts, ₹. 0 can mean a zeroed edit-artifact line. */
@@ -688,6 +693,7 @@ function normalizeSessionInvoice(
       const quantity = Number(item.quantity ?? item.qty ?? 0);
       return {
         name: String(item.name ?? item.product_name ?? ""),
+        sku: String(item.product_id ?? ""),
         quantity,
         category: String(item.category ?? item.product_category ?? ""),
         totalAmount:
@@ -979,6 +985,43 @@ export const swipeBilling: BillingProvider = {
   async createMembershipPunch(input: MembershipPunchInput): Promise<{ invoiceNumber: string }> {
     const partyId = await ensureCustomer(input.customer);
     return createMembershipPunchInvoice(input, partyId);
+  },
+
+  async listTodayMembershipSales(): Promise<MembershipSaleInvoice[]> {
+    // The transaction rows carry the grand total; the line items (and so the
+    // plan products) only come from the per-invoice fetch.
+    const totals = new Map<string, number>();
+    for (const row of await listTodayTransactions()) {
+      const id = String(row.new_hash_id ?? "");
+      if (id) totals.set(id, Number(row.total_amount ?? 0));
+    }
+
+    const invoices = await Promise.all(
+      [...totals.keys()].map((id) =>
+        getSessionInvoice(id).catch((err) => {
+          console.error(`failed to load invoice ${id} for membership sales:`, err);
+          return null;
+        })
+      )
+    );
+
+    const sales: MembershipSaleInvoice[] = [];
+    for (const inv of invoices) {
+      if (!inv) continue;
+      const planLines = inv.items
+        .filter((i) => i.category.toLowerCase().trim() === MEMBERSHIP_SALE_CATEGORY)
+        .map((i) => ({ sku: i.sku, name: i.name, quantity: i.quantity }));
+      if (planLines.length === 0) continue;
+      sales.push({
+        invoiceNumber: inv.serialNumber,
+        customerName: inv.partyName,
+        phone: inv.phone,
+        amount: totals.get(inv.id) ?? 0,
+        at: inv.bookedAt,
+        planLines,
+      });
+    }
+    return sales.sort((a, b) => b.at - a.at);
   },
 
   async listTodaySessions(): Promise<TodaySession[]> {

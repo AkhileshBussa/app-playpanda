@@ -9,7 +9,11 @@ Staff-only counter for PlayPanda memberships (same password as `/ops`).
    "Fun Five Pass", "Panda Pro 12", "Panda Max 25", "Supervised Play Pass").
 3. Manager records the membership on **`/members`** (phone number + plan;
    fixed plans are one tap, custom plans set their own plays/hours/validity
-   but map to an existing Swipe punch product).
+   but map to an existing Swipe punch product). The **sale invoice is picked
+   from a list of today's Swipe membership sales**, not typed — a fixed plan
+   shows only invoices carrying that plan's product, a custom plan shows all
+   of today's membership sales. Manual entry stays available for sales billed
+   on an earlier day or when Swipe is unreachable.
 4. When the member visits, the manager looks up the phone number on
    `/members` — it shows plays used, plays allowed, plays left, and expiry.
 5. If plays are left, **Punch a visit** deducts them (2 kids on one visit =
@@ -74,7 +78,8 @@ downloadable as CSV from `/members/list`).
 - `/members` — lookup by phone, punch visits, record memberships
 - `/members/list` — full ledger + **Members CSV** / **Visits CSV** downloads
 - `GET /api/members/lookup?phone=` · `POST /api/members/create` ·
-  `POST /api/members/visit` · `GET /api/members/export?what=memberships|visits`
+  `POST /api/members/visit` · `GET /api/members/sale-invoices` ·
+  `GET /api/members/export?what=memberships|visits`
   (all gated by the ops password cookie)
 
 ## Business rules
