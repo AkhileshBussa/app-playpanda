@@ -17,6 +17,7 @@ import { playsLeft } from "./types";
 
 const MEMBERSHIPS_TAB = "Memberships";
 const VISITS_TAB = "Visits";
+const DELETIONS_TAB = "Deletions";
 
 export const MEMBERSHIP_HEADERS = [
   "Created at (IST)", "Phone", "Customer", "Kids", "Plan", "Total plays",
@@ -27,6 +28,12 @@ export const MEMBERSHIP_HEADERS = [
 export const VISIT_HEADERS = [
   "Visited at (IST)", "Phone", "Customer", "Plan", "Kids in", "Plays used",
   "Plays left after", "Punch invoice", "Kid names", "Membership ID", "Visit ID",
+];
+
+// The tabs above are append-only, so deletions land here rather than editing
+// history in place.
+export const DELETION_HEADERS = [
+  "Deleted at (IST)", "What", "Phone", "Customer", "Plan", "Detail", "Reason", "ID",
 ];
 
 function config(): { sheetId: string; email: string; key: string } | null {
@@ -130,7 +137,7 @@ export async function setupSheetTabs(): Promise<string[]> {
   const meta = (await metaRes.json()) as { sheets?: Array<{ properties: { title: string } }> };
   const existing = new Set((meta.sheets ?? []).map((s) => s.properties.title));
 
-  const missing = [MEMBERSHIPS_TAB, VISITS_TAB].filter((t) => !existing.has(t));
+  const missing = [MEMBERSHIPS_TAB, VISITS_TAB, DELETIONS_TAB].filter((t) => !existing.has(t));
   if (missing.length) {
     const res = await fetch(`${base}:batchUpdate`, {
       method: "POST",
@@ -144,6 +151,7 @@ export async function setupSheetTabs(): Promise<string[]> {
   for (const [tab, headers] of [
     [MEMBERSHIPS_TAB, MEMBERSHIP_HEADERS],
     [VISITS_TAB, VISIT_HEADERS],
+    [DELETIONS_TAB, DELETION_HEADERS],
   ] as const) {
     const range = encodeURIComponent(`${tab}!A1`);
     const res = await fetch(`${base}/values/${range}?valueInputOption=RAW`, {
@@ -185,6 +193,32 @@ export async function mirrorMembership(m: Membership): Promise<void> {
     ]);
   } catch (err) {
     console.error("sheets mirror (membership) failed:", err);
+  }
+}
+
+/** Log a soft delete (membership or punch) to the sheet. Never throws. */
+export async function mirrorDeletion(input: {
+  what: "Membership" | "Punch";
+  membership: Membership;
+  /** Extra context, e.g. the punch's time and invoice number. */
+  detail: string;
+  reason: string;
+  id: string;
+  at: number;
+}): Promise<void> {
+  try {
+    await appendRow(DELETIONS_TAB, [
+      istDateTime(input.at),
+      input.what,
+      input.membership.phone,
+      input.membership.customerName,
+      input.membership.planName,
+      input.detail,
+      input.reason,
+      input.id,
+    ]);
+  } catch (err) {
+    console.error("sheets mirror (deletion) failed:", err);
   }
 }
 

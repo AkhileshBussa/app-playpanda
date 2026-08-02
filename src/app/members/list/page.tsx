@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { isOpsAuthed } from "@/lib/ops/auth";
 import { todayIST } from "@/lib/ops/state";
 import { listAllMemberships, membersDbConfigured } from "@/lib/members/db";
@@ -26,6 +27,7 @@ const STATUS_STYLE: Record<MembershipStatus, { label: string; className: string 
   active: { label: "Active", className: "bg-green/15 text-green" },
   expired: { label: "Expired", className: "bg-coral/15 text-coral" },
   exhausted: { label: "Used up", className: "bg-ink/10 text-ink/50" },
+  deleted: { label: "Deleted", className: "bg-ink/70 text-cream" },
 };
 
 const playsLabel = (m: Membership) => {
@@ -53,6 +55,7 @@ export default async function MembersListPage() {
   const today = todayIST();
   const rows = memberships.map((m) => ({ ...m, status: membershipStatus(m, today) }));
   const activeCount = rows.filter((m) => m.status === "active").length;
+  const deletedCount = rows.filter((m) => m.status === "deleted").length;
 
   return (
     <>
@@ -72,11 +75,16 @@ export default async function MembersListPage() {
 
         <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
           <span className="rounded-full bg-teal px-3 py-1 text-sm font-black text-cream">
-            {rows.length} member{rows.length === 1 ? "" : "s"}
+            {rows.length - deletedCount} member{rows.length - deletedCount === 1 ? "" : "s"}
           </span>
           <span className="rounded-full bg-green/15 px-3 py-1 text-sm font-black text-green">
             {activeCount} active
           </span>
+          {deletedCount > 0 && (
+            <span className="rounded-full bg-ink/10 px-3 py-1 text-sm font-black text-ink/50">
+              {deletedCount} deleted
+            </span>
+          )}
         </div>
 
         {loadError ? (
@@ -103,12 +111,18 @@ export default async function MembersListPage() {
                 </thead>
                 <tbody className="divide-y divide-ink/5">
                   {rows.map((m) => (
-                    <tr key={m.id} className="align-middle">
+                    <tr key={m.id} className={`align-middle ${m.status === "deleted" ? "opacity-60" : ""}`}>
                       <td className="px-5 py-3">
-                        <span className="block font-black text-ink">{m.customerName}</span>
-                        {m.kidNames && (
-                          <span className="block text-xs font-bold text-ink/45">{m.kidNames}</span>
-                        )}
+                        <Link href={`/members/${m.id}`} className="block">
+                          <span
+                            className={`block font-black text-ink ${m.status === "deleted" ? "line-through" : "underline decoration-ink/20 underline-offset-4"}`}
+                          >
+                            {m.customerName}
+                          </span>
+                          {m.kidNames && (
+                            <span className="block text-xs font-bold text-ink/45">{m.kidNames}</span>
+                          )}
+                        </Link>
                       </td>
                       <td className="whitespace-nowrap px-5 py-3 text-sm font-bold tabular-nums text-ink/70">
                         {m.phone}
@@ -139,10 +153,15 @@ export default async function MembersListPage() {
             {/* Mobile: the same rows as chunky cards. */}
             <ul className="mt-4 flex flex-col gap-3 md:hidden">
               {rows.map((m) => (
-                <li key={m.id} className="rounded-chunk bg-white p-4 shadow-chunk">
+                <li key={m.id} className={`rounded-chunk bg-white p-4 shadow-chunk ${m.status === "deleted" ? "opacity-60" : ""}`}>
+                  <Link href={`/members/${m.id}`} className="block">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="truncate text-base font-black text-ink">{m.customerName}</p>
+                      <p
+                        className={`truncate text-base font-black text-ink ${m.status === "deleted" ? "line-through" : ""}`}
+                      >
+                        {m.customerName}
+                      </p>
                       <p className="text-sm font-bold text-ink/60">
                         {m.phone} · {m.planName}
                       </p>
@@ -166,6 +185,12 @@ export default async function MembersListPage() {
                       <span className="rounded-full bg-cream px-2.5 py-1">{m.saleInvoiceNumber}</span>
                     )}
                   </div>
+                  {m.status === "deleted" && m.deletedReason && (
+                    <p className="mt-2 text-xs font-bold text-ink/40">
+                      Deleted — {m.deletedReason}
+                    </p>
+                  )}
+                  </Link>
                 </li>
               ))}
             </ul>

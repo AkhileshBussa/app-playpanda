@@ -31,20 +31,11 @@ const prettyDate = (d: string) =>
     timeZone: "Asia/Kolkata",
   });
 
-const timeIST = (ms: number) =>
-  new Date(ms).toLocaleString("en-IN", {
-    day: "numeric",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: true,
-    timeZone: "Asia/Kolkata",
-  });
-
 const STATUS_STYLE: Record<MembershipStatus, { label: string; className: string }> = {
   active: { label: "Active", className: "bg-green/15 text-green" },
   expired: { label: "Expired", className: "bg-coral/15 text-coral" },
   exhausted: { label: "Used up", className: "bg-ink/10 text-ink/50" },
+  deleted: { label: "Deleted", className: "bg-ink/70 text-cream" },
 };
 
 export default function MembersApp() {
@@ -54,7 +45,6 @@ export default function MembersApp() {
   const [notice, setNotice] = useState<string | null>(null);
   const [result, setResult] = useState<LookupResult | null>(null);
   const [visitFor, setVisitFor] = useState<ApiMembership | null>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
   const searchRef = useRef<((p: string) => void) | null>(null);
 
   const lookup = useCallback(async (rawPhone: string): Promise<LookupResult | null> => {
@@ -197,9 +187,10 @@ export default function MembersApp() {
             const status = STATUS_STYLE[m.status];
             const pct =
               m.totalPlays == null ? 100 : Math.round(((m.playsLeft ?? 0) / m.totalPlays) * 100);
-            const isOpen = expanded === m.id;
             return (
               <section key={m.id} className="rounded-chunk bg-white p-4 shadow-chunk">
+                {/* The card body opens the membership: full punch history + deletes. */}
+                <Link href={`/members/${m.id}`} className="block">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <h2 className="truncate text-lg font-black text-ink">{m.planName}</h2>
@@ -262,6 +253,13 @@ export default function MembersApp() {
                   </span>
                 </div>
 
+                {m.deletedAt != null && m.deletedReason && (
+                  <p className="mt-3 truncate text-xs font-bold text-ink/40">
+                    {m.deletedReason}
+                  </p>
+                )}
+                </Link>
+
                 {/* Actions */}
                 <div className="mt-4 flex items-center gap-2">
                   <button
@@ -272,46 +270,13 @@ export default function MembersApp() {
                   >
                     Punch a visit
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setExpanded(isOpen ? null : m.id)}
+                  <Link
+                    href={`/members/${m.id}`}
                     className="shrink-0 rounded-full bg-cream px-4 py-3 text-sm font-black text-ink/60 transition-all active:translate-y-0.5"
                   >
-                    {isOpen ? "Hide" : `Visits (${m.visits.length})`}
-                  </button>
+                    Punches ({m.visits.filter((v) => v.deletedAt == null).length})
+                  </Link>
                 </div>
-
-                {/* Visit history */}
-                {isOpen && (
-                  <ul className="mt-3 divide-y divide-ink/5 border-t border-ink/5">
-                    {m.visits.length === 0 && (
-                      <li className="py-2.5 text-center text-sm font-bold text-ink/40">
-                        No visits punched yet.
-                      </li>
-                    )}
-                    {m.visits.map((v) => (
-                      <li key={v.id} className="flex items-center gap-3 py-2.5">
-                        <span className="min-w-0 flex-1 text-sm font-black text-ink">
-                          {timeIST(v.visitedAt)}
-                          {v.kidNames && (
-                            <span className="block truncate text-xs font-bold text-ink/50">
-                              {v.kidNames}
-                            </span>
-                          )}
-                        </span>
-                        <span className="shrink-0 text-xs font-bold text-ink/50">
-                          {v.kidsCount} kid{v.kidsCount === 1 ? "" : "s"} · {v.playsUsed} play
-                          {v.playsUsed === 1 ? "" : "s"}
-                        </span>
-                        {v.punchInvoiceNumber && (
-                          <span className="shrink-0 rounded-full bg-cream px-2 py-0.5 text-[11px] font-black text-ink/50">
-                            {v.punchInvoiceNumber}
-                          </span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
               </section>
             );
           })}

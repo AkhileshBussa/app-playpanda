@@ -38,10 +38,12 @@ export async function GET(req: Request) {
     if (what === "visits") {
       const visits = await listAllVisits();
       body = csv([
-        ["Visited at (IST)", "Date", "Phone", "Kids in", "Plays used", "Kid names", "Punch invoice", "Membership ID"],
+        ["Visited at (IST)", "Date", "Phone", "Kids in", "Plays used", "Kid names",
+         "Punch invoice", "Deleted at (IST)", "Deleted reason", "Membership ID"],
         ...visits.map((v) => [
           istDateTime(v.visitedAt), v.visitDate, v.phone, v.kidsCount, v.playsUsed,
-          v.kidNames, v.punchInvoiceNumber, v.membershipId,
+          v.kidNames, v.punchInvoiceNumber,
+          v.deletedAt ? istDateTime(v.deletedAt) : "", v.deletedReason, v.membershipId,
         ]),
       ]);
     } else {
@@ -49,12 +51,14 @@ export async function GET(req: Request) {
       body = csv([
         ["Created at (IST)", "Phone", "Customer", "Kids", "Plan", "Status", "Plays used",
          "Plays left", "Total plays", "Hours/play", "Kids/play", "Starts", "Expires",
-         "Price (₹)", "Sale invoice", "Notes", "Membership ID"],
+         "Price (₹)", "Sale invoice", "Notes", "Deleted at (IST)", "Deleted reason",
+         "Membership ID"],
         ...memberships.map((m) => [
           istDateTime(m.createdAt), m.phone, m.customerName, m.kidNames, m.planName,
           membershipStatus(m, today), m.playsUsed, playsLeft(m) ?? "Unlimited",
           m.totalPlays ?? "Unlimited", m.hoursPerPlay, m.kidsPerPlay, m.startsOn,
-          m.expiresOn, m.priceInr ?? "", m.saleInvoiceNumber, m.notes, m.id,
+          m.expiresOn, m.priceInr ?? "", m.saleInvoiceNumber, m.notes,
+          m.deletedAt ? istDateTime(m.deletedAt) : "", m.deletedReason, m.id,
         ]),
       ]);
     }

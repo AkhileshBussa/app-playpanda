@@ -27,8 +27,11 @@ export interface Membership {
   expiresOn: string; // YYYY-MM-DD (IST) — the expiry day itself is usable
   notes: string;
   createdAt: number; // unix ms
-  /** Total plays consumed so far (computed from visits). */
+  /** Total plays consumed so far (computed from visits, deleted ones excluded). */
   playsUsed: number;
+  /** Soft delete — rows are never removed, only marked. null = live. */
+  deletedAt: number | null;
+  deletedReason: string;
 }
 
 export interface MembershipVisit {
@@ -41,15 +44,19 @@ export interface MembershipVisit {
   visitDate: string; // YYYY-MM-DD (IST)
   punchInvoiceNumber: string;
   visitedAt: number; // unix ms
+  /** Soft delete — a deleted punch gives its plays back. null = live. */
+  deletedAt: number | null;
+  deletedReason: string;
 }
 
-export type MembershipStatus = "active" | "expired" | "exhausted";
+export type MembershipStatus = "active" | "expired" | "exhausted" | "deleted";
 
 export function playsLeft(m: Membership): number | null {
   return m.totalPlays == null ? null : Math.max(0, m.totalPlays - m.playsUsed);
 }
 
 export function membershipStatus(m: Membership, todayIST: string): MembershipStatus {
+  if (m.deletedAt != null) return "deleted";
   if (todayIST > m.expiresOn) return "expired";
   const left = playsLeft(m);
   if (left !== null && left <= 0) return "exhausted";

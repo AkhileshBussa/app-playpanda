@@ -78,6 +78,15 @@ function ensureSchema(): Promise<void> {
           ON membership_visits (membership_id);
         CREATE INDEX IF NOT EXISTS membership_visits_date_idx
           ON membership_visits (visit_date);
+
+        -- Soft delete: nothing is ever removed, only marked with a reason.
+        -- Added after the first release, so patch existing tables too.
+        ALTER TABLE memberships
+          ADD COLUMN IF NOT EXISTS deleted_at BIGINT,
+          ADD COLUMN IF NOT EXISTS deleted_reason TEXT NOT NULL DEFAULT '';
+        ALTER TABLE membership_visits
+          ADD COLUMN IF NOT EXISTS deleted_at BIGINT,
+          ADD COLUMN IF NOT EXISTS deleted_reason TEXT NOT NULL DEFAULT '';
       `);
     })().catch((err) => {
       schemaReady = null; // let the next call retry
@@ -112,6 +121,8 @@ function toMembership(r: any): Membership {
     notes: r.notes,
     createdAt: Number(r.created_at),
     playsUsed: Number(r.plays_used_total ?? 0),
+    deletedAt: r.deleted_at == null ? null : Number(r.deleted_at),
+    deletedReason: r.deleted_reason ?? "",
   };
 }
 
@@ -126,16 +137,19 @@ function toVisit(r: any): MembershipVisit {
     visitDate: r.visit_date,
     punchInvoiceNumber: r.punch_invoice_number,
     visitedAt: Number(r.visited_at),
+    deletedAt: r.deleted_at == null ? null : Number(r.deleted_at),
+    deletedReason: r.deleted_reason ?? "",
   };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
+// Deleted punches give their plays back, so they're excluded from the total.
 const MEMBERSHIP_SELECT = `
   SELECT m.*, COALESCE(v.used, 0) AS plays_used_total
   FROM memberships m
   LEFT JOIN (
     SELECT membership_id, SUM(plays_used) AS used
-    FROM membership_visits GROUP BY membership_id
+    FROM membership_visits WHERE deleted_at IS NULL GROUP BY membership_id
   ) v ON v.membership_id = m.id
 `;
 
@@ -202,7 +216,8 @@ export async function listMembershipsByPhone(phone: string): Promise<Membership[
 export async function listLinkedSaleInvoices(): Promise<string[]> {
   await ensureSchema();
   const { rows } = await getPool().query(
-    `SELECT DISTINCT sale_invoice_number FROM memberships WHERE sale_invoice_number <> ''`
+    `SELECT DISTINCT sale_invoice_number FROM memberships
+     WHERE sale_invoice_number <> '' AND deleted_at IS NULL`
   );
   return rows.map((r) => r.sale_invoice_number as string);
 }
@@ -234,7 +249,10 @@ export async function listAllVisits(): Promise<MembershipVisit[]> {
 
 /** Visit rejected for a business-rule reason the UI should explain. */
 export class VisitError extends Error {
-  constructor(readonly code: "not_found" | "expired" | "exhausted" | "already_today", message: string) {
+  constructor(
+    readonly code: "not_found" | "expired" | "exhausted" | "already_today" | "deleted",
+    message: string
+  ) {
     super(message);
     this.name = "VisitError";
   }
@@ -267,12 +285,17 @@ export async function recordVisit(
     if (!rows[0]) throw new VisitError("not_found", "Membership not found");
     const m = rows[0];
 
+    if (m.deleted_at != null) {
+      throw new VisitError("deleted", "This membership was deleted and can't be punched");
+    }
+
     if (input.visitDate > m.expires_on) {
       throw new VisitError("expired", `This membership expired on ${m.expires_on}`);
     }
 
     const usedRes = await client.query(
-      `SELECT COALESCE(SUM(plays_used), 0) AS used FROM membership_visits WHERE membership_id = $1`,
+      `SELECT COALESCE(SUM(plays_used), 0) AS used FROM membership_visits
+       WHERE membership_id = $1 AND deleted_at IS NULL`,
       [input.membershipId]
     );
     const used = Number(usedRes.rows[0].used);
@@ -289,7 +312,8 @@ export async function recordVisit(
 
     if (m.once_per_day) {
       const todayRes = await client.query(
-        `SELECT 1 FROM membership_visits WHERE membership_id = $1 AND visit_date = $2 LIMIT 1`,
+        `SELECT 1 FROM membership_visits
+         WHERE membership_id = $1 AND visit_date = $2 AND deleted_at IS NULL LIMIT 1`,
         [input.membershipId, input.visitDate]
       );
       if (todayRes.rows.length > 0) {
@@ -330,7 +354,49 @@ export async function setVisitInvoice(visitId: string, invoiceNumber: string): P
   ]);
 }
 
-/** Compensation: remove a visit whose Swipe punch invoice failed to create. */
-export async function deleteVisit(visitId: string): Promise<void> {
+/**
+ * Compensation for a punch whose Swipe invoice failed: the visit never really
+ * happened, so this is the one case that genuinely removes the row.
+ */
+export async function hardDeleteVisit(visitId: string): Promise<void> {
   await getPool().query(`DELETE FROM membership_visits WHERE id = $1`, [visitId]);
+}
+
+// ── Soft deletes ─────────────────────────────────────────────────────────────
+// Rows are kept and marked, so the ledger still shows what happened and why.
+// Deleting the last punch of a membership hands its plays back automatically
+// (every plays-used sum filters on deleted_at IS NULL).
+
+/** Already-deleted rows are returned unchanged rather than re-stamped. */
+export async function softDeleteMembership(
+  id: string,
+  reason: string
+): Promise<Membership | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `UPDATE memberships SET deleted_at = $2, deleted_reason = $3
+     WHERE id = $1 AND deleted_at IS NULL
+     RETURNING *`,
+    [id, Date.now(), reason]
+  );
+  if (!rows[0]) return getMembership(id);
+  // Re-read so playsUsed comes back with the row.
+  return getMembership(id);
+}
+
+export async function softDeleteVisit(
+  id: string,
+  reason: string
+): Promise<{ visit: MembershipVisit; membership: Membership } | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `UPDATE membership_visits SET deleted_at = $2, deleted_reason = $3
+     WHERE id = $1 AND deleted_at IS NULL
+     RETURNING *`,
+    [id, Date.now(), reason]
+  );
+  if (!rows[0]) return null;
+  const visit = toVisit(rows[0]);
+  const membership = await getMembership(visit.membershipId);
+  return membership ? { visit, membership } : null;
 }

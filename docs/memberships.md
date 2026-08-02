@@ -84,6 +84,25 @@ lookup, creating does not.
 - `/members/new` — **New membership**: standalone form, no lookup required
 - `/members/list` — **All members**: full ledger. No download buttons; for a
   bulk export use the Google Sheet, or hit `/api/members/export` (see below).
+- `/members/<id>` — one membership: its terms, every punch, and deletions.
+  Reached by clicking a membership anywhere it's listed.
+
+## Deleting
+
+Nothing is ever removed from the database. Deleting a membership or a punch
+marks the row with a timestamp and a **required reason**, and it keeps showing
+up (struck through, tagged `Deleted`, with the reason) so the history stays
+readable. Both actions live on the membership's own page.
+
+- **Deleting a punch gives its plays back** — every plays-used total ignores
+  deleted rows — so it's the right fix for a mis-punch.
+- **Deleting a membership** blocks further punches and frees its sale invoice
+  for re-linking. Punches already made are left as they are.
+- **Swipe is never touched.** A punch's ₹0 invoice stays in Swipe; the UI
+  names it so the manager can delete it there if they want to.
+- Deletions are also appended to a **Deletions** tab in the Google Sheet
+  (the other tabs are append-only history). Re-run
+  `npx tsx scripts/setup-sheets.ts` once to create that tab.
 - `GET /api/members/lookup?phone=` · `POST /api/members/create` ·
   `POST /api/members/visit` · `GET /api/members/sale-invoices` ·
   `GET /api/members/export?what=memberships|visits`

@@ -4,7 +4,7 @@ import { isOpsAuthed } from "@/lib/ops/auth";
 import { todayIST } from "@/lib/ops/state";
 import { billing } from "@/lib/billing";
 import {
-  deleteVisit,
+  hardDeleteVisit,
   getMembership,
   membersDbConfigured,
   recordVisit,
@@ -103,7 +103,7 @@ export async function POST(req: Request) {
     } catch (err) {
       // Swipe failed → give the plays back so nothing is silently consumed.
       console.error("punch invoice failed, rolling back visit:", err);
-      await deleteVisit(visit.id).catch((rollbackErr) => {
+      await hardDeleteVisit(visit.id).catch((rollbackErr) => {
         console.error("CRITICAL: visit rollback failed — plays over-deducted:", visit.id, rollbackErr);
       });
       return NextResponse.json(
