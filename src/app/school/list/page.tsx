@@ -4,6 +4,7 @@ import { isOpsAuthed } from "@/lib/ops/auth";
 import { listSchoolKids, type SchoolKidEntry } from "@/lib/school";
 import { todayIST } from "@/lib/ops/state";
 import OpsLoginGate from "@/components/ops/OpsLoginGate";
+import OpsNav from "@/components/ops/OpsNav";
 import AutoRefresh from "@/components/success/AutoRefresh";
 import PrintButton from "@/components/school/PrintButton";
 
@@ -73,7 +74,9 @@ export default async function SchoolListPage({
   });
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-5 pb-16 pt-6 print:max-w-none">
+    <>
+      <OpsNav />
+      <main className="mx-auto flex w-full max-w-md flex-col px-5 pb-16 pt-6 print:max-w-none">
       {/* While viewing today's visit, keep the roster live as staff add kids. */}
       {isToday && <AutoRefresh intervalMs={10_000} />}
 
@@ -167,6 +170,7 @@ export default async function SchoolListPage({
           ))}
         </div>
       )}
-    </main>
+      </main>
+    </>
   );
 }

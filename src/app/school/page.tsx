@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { isOpsAuthed } from "@/lib/ops/auth";
 import OpsLoginGate from "@/components/ops/OpsLoginGate";
+import OpsNav from "@/components/ops/OpsNav";
 import SchoolLog from "@/components/school/SchoolLog";
 
 export const dynamic = "force-dynamic";
@@ -16,5 +17,12 @@ export const metadata: Metadata = {
  * devices automatically.
  */
 export default async function SchoolPage() {
-  return (await isOpsAuthed()) ? <SchoolLog /> : <OpsLoginGate />;
+  if (!(await isOpsAuthed())) return <OpsLoginGate />;
+
+  return (
+    <>
+      <OpsNav />
+      <SchoolLog />
+    </>
+  );
 }

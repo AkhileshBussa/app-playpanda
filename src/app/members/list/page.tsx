@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { isOpsAuthed } from "@/lib/ops/auth";
 import { todayIST } from "@/lib/ops/state";
 import { listAllMemberships, membersDbConfigured } from "@/lib/members/db";
 import { membershipStatus, playsLeft, type Membership, type MembershipStatus } from "@/lib/members/types";
 import OpsLoginGate from "@/components/ops/OpsLoginGate";
+import OpsNav from "@/components/ops/OpsNav";
+import MembersTabs from "@/components/members/MembersTabs";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,11 @@ const STATUS_STYLE: Record<MembershipStatus, { label: string; className: string 
   exhausted: { label: "Used up", className: "bg-ink/10 text-ink/50" },
 };
 
+const playsLabel = (m: Membership) => {
+  const left = playsLeft(m);
+  return left == null ? "Unlimited · 1/day" : `${left} of ${m.totalPlays}`;
+};
+
 /** The full membership ledger — every member, plays left, expiry. CSV export. */
 export default async function MembersListPage() {
   if (!(await isOpsAuthed())) return <OpsLoginGate />;
@@ -45,88 +51,142 @@ export default async function MembersListPage() {
   }
 
   const today = todayIST();
-  const withStatus = memberships.map((m) => ({ ...m, status: membershipStatus(m, today) }));
-  const activeCount = withStatus.filter((m) => m.status === "active").length;
+  const rows = memberships.map((m) => ({ ...m, status: membershipStatus(m, today) }));
+  const activeCount = rows.filter((m) => m.status === "active").length;
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-5 pb-16 pt-6">
-      <header>
-        <h1 className="text-2xl font-black leading-tight text-ink">All members</h1>
-        <p className="mt-1 text-sm font-bold text-ink/60">
-          Every membership, newest first · plays left & expiry
-        </p>
-      </header>
+    <>
+      <OpsNav />
+      <main className="mx-auto flex w-full max-w-6xl flex-col px-5 pb-16 pt-6">
+        <header className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-black leading-tight text-ink">All members</h1>
+            <p className="mt-1 text-sm font-bold text-ink/60">
+              Every membership, newest first · plays left &amp; expiry
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <a
+              href="/api/members/export?what=memberships"
+              className="rounded-full bg-white px-3.5 py-2 text-xs font-black text-ink/70 shadow-[0_2px_0_rgba(0,0,0,0.06)]"
+            >
+              ⬇ Members CSV
+            </a>
+            <a
+              href="/api/members/export?what=visits"
+              className="rounded-full bg-white px-3.5 py-2 text-xs font-black text-ink/70 shadow-[0_2px_0_rgba(0,0,0,0.06)]"
+            >
+              ⬇ Visits CSV
+            </a>
+          </div>
+        </header>
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <Link href="/members" className="text-sm font-black text-teal underline underline-offset-2">
-          ← Member lookup
-        </Link>
-        <span className="flex-1" />
-        <a
-          href="/api/members/export?what=memberships"
-          className="rounded-full bg-white px-3.5 py-1.5 text-xs font-black text-ink/70 shadow-[0_2px_0_rgba(0,0,0,0.06)]"
-        >
-          ⬇ Members CSV
-        </a>
-        <a
-          href="/api/members/export?what=visits"
-          className="rounded-full bg-white px-3.5 py-1.5 text-xs font-black text-ink/70 shadow-[0_2px_0_rgba(0,0,0,0.06)]"
-        >
-          ⬇ Visits CSV
-        </a>
-      </div>
+        <div className="mt-4">
+          <MembersTabs />
+        </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <span className="rounded-full bg-teal px-3 py-1 text-sm font-black text-cream">
-          {withStatus.length} member{withStatus.length === 1 ? "" : "s"}
-        </span>
-        <span className="rounded-full bg-green/15 px-3 py-1 text-sm font-black text-green">
-          {activeCount} active
-        </span>
-      </div>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <span className="rounded-full bg-teal px-3 py-1 text-sm font-black text-cream">
+            {rows.length} member{rows.length === 1 ? "" : "s"}
+          </span>
+          <span className="rounded-full bg-green/15 px-3 py-1 text-sm font-black text-green">
+            {activeCount} active
+          </span>
+        </div>
 
-      {loadError ? (
-        <p className="mt-8 text-center text-sm font-bold text-coral">{loadError}</p>
-      ) : withStatus.length === 0 ? (
-        <p className="mt-8 text-center text-sm font-bold text-ink/40">
-          No memberships recorded yet — add the first one from the member lookup page.
-        </p>
-      ) : (
-        <ul className="mt-4 flex flex-col gap-3">
-          {withStatus.map((m) => {
-            const status = STATUS_STYLE[m.status];
-            const left = playsLeft(m);
-            return (
-              <li key={m.id} className="rounded-chunk bg-white p-4 shadow-chunk">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="truncate text-base font-black text-ink">{m.customerName}</p>
-                    <p className="text-sm font-bold text-ink/60">
-                      {m.phone} · {m.planName}
-                    </p>
+        {loadError ? (
+          <p className="mt-8 text-center text-sm font-bold text-coral">{loadError}</p>
+        ) : rows.length === 0 ? (
+          <p className="mt-8 text-center text-sm font-bold text-ink/40">
+            No memberships recorded yet — add the first one from the counter.
+          </p>
+        ) : (
+          <>
+            {/* Desktop: a proper ledger table. */}
+            <div className="mt-4 hidden overflow-x-auto rounded-chunk bg-white shadow-chunk md:block">
+              <table className="w-full min-w-[52rem] border-collapse text-left">
+                <thead>
+                  <tr className="border-b-2 border-ink/5 text-xs font-black uppercase tracking-widest text-ink/40">
+                    <th className="px-5 py-3">Customer</th>
+                    <th className="px-5 py-3">Phone</th>
+                    <th className="px-5 py-3">Plan</th>
+                    <th className="px-5 py-3">Status</th>
+                    <th className="px-5 py-3">Plays left</th>
+                    <th className="px-5 py-3">Expires</th>
+                    <th className="px-5 py-3">Sale invoice</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-ink/5">
+                  {rows.map((m) => (
+                    <tr key={m.id} className="align-middle">
+                      <td className="px-5 py-3">
+                        <span className="block font-black text-ink">{m.customerName}</span>
+                        {m.kidNames && (
+                          <span className="block text-xs font-bold text-ink/45">{m.kidNames}</span>
+                        )}
+                      </td>
+                      <td className="whitespace-nowrap px-5 py-3 text-sm font-bold tabular-nums text-ink/70">
+                        {m.phone}
+                      </td>
+                      <td className="px-5 py-3 text-sm font-bold text-ink/70">{m.planName}</td>
+                      <td className="px-5 py-3">
+                        <span
+                          className={`inline-block rounded-full px-2.5 py-1 text-xs font-black uppercase tracking-wide ${STATUS_STYLE[m.status].className}`}
+                        >
+                          {STATUS_STYLE[m.status].label}
+                        </span>
+                      </td>
+                      <td className="whitespace-nowrap px-5 py-3 text-sm font-black tabular-nums text-ink">
+                        {playsLabel(m)}
+                      </td>
+                      <td className="whitespace-nowrap px-5 py-3 text-sm font-bold tabular-nums text-ink/70">
+                        {prettyDate(m.expiresOn)}
+                      </td>
+                      <td className="whitespace-nowrap px-5 py-3 text-sm font-bold text-ink/45">
+                        {m.saleInvoiceNumber || "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile: the same rows as chunky cards. */}
+            <ul className="mt-4 flex flex-col gap-3 md:hidden">
+              {rows.map((m) => (
+                <li key={m.id} className="rounded-chunk bg-white p-4 shadow-chunk">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-base font-black text-ink">{m.customerName}</p>
+                      <p className="text-sm font-bold text-ink/60">
+                        {m.phone} · {m.planName}
+                      </p>
+                    </div>
+                    <span
+                      className={`shrink-0 rounded-full px-3 py-1 text-xs font-black uppercase tracking-wide ${STATUS_STYLE[m.status].className}`}
+                    >
+                      {STATUS_STYLE[m.status].label}
+                    </span>
                   </div>
-                  <span
-                    className={`shrink-0 rounded-full px-3 py-1 text-xs font-black uppercase tracking-wide ${status.className}`}
-                  >
-                    {status.label}
-                  </span>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-1.5 text-xs font-black text-ink/60">
-                  <span className="rounded-full bg-cream px-2.5 py-1">
-                    {left == null ? "Unlimited · 1/day" : `${left} of ${m.totalPlays} plays left`}
-                  </span>
-                  <span className="rounded-full bg-cream px-2.5 py-1">
-                    {m.status === "expired" ? "Expired" : "Expires"} {prettyDate(m.expiresOn)}
-                  </span>
-                  {m.saleInvoiceNumber && (
-                    <span className="rounded-full bg-cream px-2.5 py-1">{m.saleInvoiceNumber}</span>
-                  )}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </main>
+                  <div className="mt-2 flex flex-wrap gap-1.5 text-xs font-black text-ink/60">
+                    <span className="rounded-full bg-cream px-2.5 py-1">
+                      {playsLeft(m) == null
+                        ? "Unlimited · 1/day"
+                        : `${playsLeft(m)} of ${m.totalPlays} plays left`}
+                    </span>
+                    <span className="rounded-full bg-cream px-2.5 py-1">
+                      {m.status === "expired" ? "Expired" : "Expires"} {prettyDate(m.expiresOn)}
+                    </span>
+                    {m.saleInvoiceNumber && (
+                      <span className="rounded-full bg-cream px-2.5 py-1">{m.saleInvoiceNumber}</span>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </main>
+    </>
   );
 }

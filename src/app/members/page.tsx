@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { isOpsAuthed } from "@/lib/ops/auth";
 import OpsLoginGate from "@/components/ops/OpsLoginGate";
+import OpsNav from "@/components/ops/OpsNav";
 import MembersApp from "@/components/members/MembersApp";
 
 export const dynamic = "force-dynamic";
@@ -17,5 +18,12 @@ export const metadata: Metadata = {
  * handles everything after.
  */
 export default async function MembersPage() {
-  return (await isOpsAuthed()) ? <MembersApp /> : <OpsLoginGate />;
+  if (!(await isOpsAuthed())) return <OpsLoginGate />;
+
+  return (
+    <>
+      <OpsNav />
+      <MembersApp />
+    </>
+  );
 }

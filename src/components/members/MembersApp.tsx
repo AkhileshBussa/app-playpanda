@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import Image from "next/image";
 import type { Membership, MembershipStatus, MembershipVisit } from "@/lib/members/types";
 import { normalizePhone } from "@/lib/members/types";
+import MembersTabs from "./MembersTabs";
 import NewMembershipSheet from "./NewMembershipSheet";
 import RecordVisitSheet from "./RecordVisitSheet";
 
@@ -101,7 +102,7 @@ export default function MembersApp() {
   }, [result, lookup]);
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-5 pb-16 pt-6">
+    <main className="mx-auto flex w-full max-w-md flex-col px-5 pb-16 pt-6">
       {/* Header */}
       <header className="flex items-start justify-between">
         <div>
@@ -113,13 +114,8 @@ export default function MembersApp() {
         <Image src="/MascotWithoutBG.png" alt="" width={60} height={80} className="h-16 w-auto" />
       </header>
 
-      <div className="mt-2 flex items-center gap-3">
-        <a href="/members/list" className="text-sm font-black text-teal underline underline-offset-2">
-          All members →
-        </a>
-        <a href="/ops" className="text-sm font-black text-green underline underline-offset-2">
-          Session monitor →
-        </a>
+      <div className="mt-3">
+        <MembersTabs />
       </div>
 
       {/* Search */}
