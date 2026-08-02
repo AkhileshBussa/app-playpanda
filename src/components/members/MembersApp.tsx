@@ -175,25 +175,39 @@ export default function MembersApp() {
             )}
           </div>
 
-          {result.memberships.length === 0 && (
-            <p className="text-sm font-bold text-ink/40">
-              No memberships on this number yet — add the first one below.
-            </p>
-          )}
-
-          {/* Cards tile across the width on bigger screens; one per row on phones. */}
-          <div className="grid items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {result.memberships.length === 0 ? (
+            /* Nothing to punch, so creating is the only useful next step. */
+            <div className="mx-auto w-full max-w-2xl rounded-chunk border-2 border-dashed border-teal/50 bg-teal/5 p-8 text-center">
+              <p className="text-base font-black text-ink">No memberships on this number yet</p>
+              <Link
+                href={`/members/new?phone=${result.phone}`}
+                className="mt-4 inline-block rounded-full bg-coral px-7 py-3 text-base font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
+              >
+                + New membership
+              </Link>
+            </div>
+          ) : (
+          /* One membership fills the column under the search; several tile. */
+          <div
+            className={
+              result.memberships.length === 1
+                ? "mx-auto w-full max-w-2xl"
+                : result.memberships.length === 2
+                  ? "grid items-start gap-4 sm:grid-cols-2"
+                  : "grid items-start gap-4 sm:grid-cols-2 xl:grid-cols-3"
+            }
+          >
           {result.memberships.map((m) => {
             const status = STATUS_STYLE[m.status];
             const pct =
               m.totalPlays == null ? 100 : Math.round(((m.playsLeft ?? 0) / m.totalPlays) * 100);
             return (
-              <section key={m.id} className="rounded-chunk bg-white p-4 shadow-chunk">
+              <section key={m.id} className="rounded-chunk bg-white p-5 shadow-chunk">
                 {/* The card body opens the membership: full punch history + deletes. */}
                 <Link href={`/members/${m.id}`} className="block">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <h2 className="truncate text-lg font-black text-ink">{m.planName}</h2>
+                    <h2 className="truncate text-xl font-black text-ink">{m.planName}</h2>
                     <p className="text-sm font-bold text-ink/60">
                       {m.customerName}
                       {m.kidNames && ` · ${m.kidNames}`}
@@ -280,16 +294,8 @@ export default function MembersApp() {
               </section>
             );
           })}
-
-          {/* Convenience hop to the create form, carrying the number across —
-              creating doesn't require a lookup, this just saves retyping. */}
-          <Link
-            href={`/members/new?phone=${result.phone}`}
-            className="flex items-center justify-center rounded-chunk border-2 border-dashed border-teal/50 bg-teal/5 px-4 py-3.5 text-center text-base font-black text-teal transition-all active:translate-y-0.5 sm:min-h-[11rem]"
-          >
-            + New membership on this number
-          </Link>
           </div>
+          )}
         </div>
       )}
 
