@@ -286,7 +286,7 @@ export default function BookingForm() {
         {/* Socks */}
         <section className="rounded-chunk bg-white p-4 shadow-chunk">
           <div className="flex items-center gap-2">
-            <div className="text-base font-black text-ink">Grip socks</div>
+            <div className="text-base font-black text-ink">Socks</div>
             <span className="rounded-full bg-coral px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-cream">
               Required
             </span>
