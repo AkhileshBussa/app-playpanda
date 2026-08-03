@@ -7,6 +7,7 @@ import { getManualVisits, manualToOpsSession, type ManualVisit } from "@/lib/ops
 import OpsSessionCard from "./OpsSessionCard";
 import AddVisit from "./AddVisit";
 import InvoiceItemsSheet from "./InvoiceItemsSheet";
+import CollectPaymentSheet from "./CollectPaymentSheet";
 import SalesLine from "./SalesLine";
 
 type Filter = "all" | OpsStatus;
@@ -28,6 +29,8 @@ export default function OpsDashboard() {
   const [showAddForm, setShowAddForm] = useState(false);
   /** Session whose invoice items are being viewed. */
   const [invoiceFor, setInvoiceFor] = useState<OpsSession | null>(null);
+  /** Session we're taking payment for. */
+  const [collectFor, setCollectFor] = useState<OpsSession | null>(null);
   const [now, setNow] = useState(Date.now());
 
   // Actions in flight — while >0, keep optimistic overrides through polls.
@@ -111,6 +114,10 @@ export default function OpsDashboard() {
           ...prev,
           [session.id]: { ...prev[session.id], checkinAt: data.checkinAt ?? Date.now() },
         }));
+        // Check-in is when the customer is at the counter, so if they still owe
+        // money, put the payment in front of the manager rather than waiting
+        // for them to spot the badge.
+        if (session.amountDue > 0 && !session.isManual) setCollectFor(session);
         return null;
       } catch {
         return "Network error — please retry";
@@ -272,6 +279,7 @@ export default function OpsDashboard() {
                 onUndoCheckIn={handleUndoCheckIn}
                 onCheckout={handleCheckout}
                 onShowInvoice={setInvoiceFor}
+                onCollect={setCollectFor}
               />
             ))}
           </div>
@@ -289,6 +297,22 @@ export default function OpsDashboard() {
 
       {invoiceFor && (
         <InvoiceItemsSheet session={invoiceFor} onClose={() => setInvoiceFor(null)} />
+      )}
+
+      {collectFor && (
+        <CollectPaymentSheet
+          session={collectFor}
+          onClose={() => setCollectFor(null)}
+          onCollected={(session, amountDue) => {
+            setCollectFor(null);
+            // Show the new balance at once; the next poll confirms it.
+            setOverrides((prev) => ({
+              ...prev,
+              [session.id]: { ...prev[session.id], amountDue, paid: amountDue <= 0 },
+            }));
+            fetchSessions();
+          }}
+        />
       )}
 
       <AddVisit

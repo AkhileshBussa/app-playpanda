@@ -16,9 +16,11 @@ import type {
   BookingDetails,
   BillingProvider,
   CreateBookingInput,
+  CollectPaymentInput,
   CustomerProfile,
   DaySales,
   InvoiceLine,
+  PaymentResult,
   MembershipPunchInput,
   MembershipSaleInvoice,
   RecordPaymentInput,
@@ -616,6 +618,85 @@ interface SessionInvoice {
   items: SessionItem[];
 }
 
+/**
+ * Locate one invoice by its human serial. The prefix is added when the caller
+ * passed a bare number, and the fuzzy search is filtered down to the exact
+ * match. Returns the raw row (doc_count, customer_id, amount_pending, …).
+ */
+async function findTransactionBySerial(
+  invoiceNumber: string
+): Promise<{ serial: string; row: Record<string, unknown> } | null> {
+  const prefix = await getInvoicePrefix();
+  const serial = invoiceNumber.startsWith(prefix) ? invoiceNumber : `${prefix}${invoiceNumber}`;
+
+  const txns = await swipeCall<SwipeResponse & { transactions?: Array<Record<string, unknown>> }>(
+    "v2/doc",
+    "get_transactions",
+    {
+      num_records: 20,
+      page: 0,
+      payment_status: 0,
+      search: serial,
+      search_type: "serial_no",
+      filters: { invoice_type: [], payment_mode: "", filtered_users: [], status: "", is_export: false, type_of_doc: [], prefixes: [] },
+      date: "",
+      document_type: "invoice",
+      sort_type: "",
+      sort_order: "",
+    }
+  );
+  const row = (txns.transactions ?? []).find((t) => t.serial_number === serial);
+  return row ? { serial, row } : null;
+}
+
+/** What's still owed on a transaction row, in ₹. */
+function pendingFromRow(row: Record<string, unknown>): number {
+  const paid = String(row.payment_status ?? "").toLowerCase() === "paid";
+  return Number(row.amount_pending ?? (paid ? 0 : (row.total_amount ?? 0)));
+}
+
+/** The one place a payment is written to Swipe — shared by both port methods. */
+async function createSwipePayment(p: {
+  serialNumber: string;
+  docCount: number;
+  partyId: number | null;
+  amount: number;
+  method: string;
+  transactionRef?: string;
+}): Promise<void> {
+  await swipeCall("v3/payments", "create_payment", {
+    payments: [
+      {
+        documents: [
+          {
+            serial_number: p.serialNumber,
+            amount_settled: p.amount,
+            doc_count: p.docCount,
+            document_type: "invoice",
+          },
+        ],
+        payment_date: swipeDateToday(),
+        notes: p.transactionRef ? `Ref ${p.transactionRef}` : "",
+        utr_id: p.transactionRef ?? "",
+        party_id: p.partyId,
+        party_type: "customer",
+        amount: p.amount,
+        payment_mode: p.method,
+        bank_id: DEFAULT_BANK_ID,
+        payment_type: "in",
+        tds_details: { apply_on: "net_amount", is_tds: 0 },
+        attachments: [],
+        signature: "",
+        send_sms: false,
+        send_email: false,
+        exclusive_notes: "",
+        is_edit: false,
+        project_id: -1,
+      },
+    ],
+  });
+}
+
 /** Raw get_transactions rows for today (paged) — totals + payments included. */
 async function listTodayTransactions(): Promise<Array<Record<string, unknown>>> {
   const PAGE_SIZE = 100;
@@ -887,28 +968,9 @@ export const swipeBilling: BillingProvider = {
   },
 
   async getBookingByInvoiceNumber(invoiceNumber: string): Promise<BookingDetails | null> {
-    const prefix = await getInvoicePrefix();
-    const serial = invoiceNumber.startsWith(prefix) ? invoiceNumber : `${prefix}${invoiceNumber}`;
-
-    // Find the invoice by exact serial (search is fuzzy → filter for the match).
-    const txns = await swipeCall<SwipeResponse & { transactions?: Array<Record<string, unknown>> }>(
-      "v2/doc",
-      "get_transactions",
-      {
-        num_records: 20,
-        page: 0,
-        payment_status: 0,
-        search: serial,
-        search_type: "serial_no",
-        filters: { invoice_type: [], payment_mode: "", filtered_users: [], status: "", is_export: false, type_of_doc: [], prefixes: [] },
-        date: "",
-        document_type: "invoice",
-        sort_type: "",
-        sort_order: "",
-      }
-    );
-    const match = (txns.transactions ?? []).find((t) => t.serial_number === serial);
-    if (!match?.new_hash_id) return null;
+    const found = await findTransactionBySerial(invoiceNumber);
+    if (!found?.row.new_hash_id) return null;
+    const { serial, row: match } = found;
 
     const d = await swipeCall<SwipeResponse & { invoice_details?: Record<string, unknown> }>(
       "v2/doc",
@@ -950,37 +1012,47 @@ export const swipeBilling: BillingProvider = {
 
   async recordPayment(input: RecordPaymentInput): Promise<void> {
     const { serialNumber, docCount, partyId } = JSON.parse(input.ref) as SwipeRef;
-    await swipeCall("v3/payments", "create_payment", {
-      payments: [
-        {
-          documents: [
-            {
-              serial_number: serialNumber,
-              amount_settled: input.amount,
-              doc_count: docCount,
-              document_type: "invoice",
-            },
-          ],
-          payment_date: swipeDateToday(),
-          notes: input.transactionRef ? `Ref ${input.transactionRef}` : "",
-          utr_id: input.transactionRef ?? "",
-          party_id: partyId,
-          party_type: "customer",
-          amount: input.amount,
-          payment_mode: input.method,
-          bank_id: DEFAULT_BANK_ID,
-          payment_type: "in",
-          tds_details: { apply_on: "net_amount", is_tds: 0 },
-          attachments: [],
-          signature: "",
-          send_sms: false,
-          send_email: false,
-          exclusive_notes: "",
-          is_edit: false,
-          project_id: -1,
-        },
-      ],
+    await createSwipePayment({
+      serialNumber,
+      docCount,
+      partyId,
+      amount: input.amount,
+      method: input.method,
+      transactionRef: input.transactionRef,
     });
+  },
+
+  async collectPayment(input: CollectPaymentInput): Promise<PaymentResult> {
+    const found = await findTransactionBySerial(input.invoiceNumber);
+    if (!found) throw new Error(`No invoice ${input.invoiceNumber} found`);
+    const { serial, row } = found;
+
+    const pending = pendingFromRow(row);
+    if (pending <= 0) {
+      throw new Error(`${serial} is already settled`);
+    }
+    // Guard the counter against fat-fingering more than is owed; Swipe would
+    // happily record it and leave a credit to unpick.
+    if (input.amount > pending + 0.5) {
+      throw new Error(
+        `Only ₹${pending.toLocaleString("en-IN")} is due on ${serial} — can't collect ₹${input.amount.toLocaleString("en-IN")}`
+      );
+    }
+
+    await createSwipePayment({
+      serialNumber: serial,
+      docCount: Number(row.doc_count ?? 0),
+      partyId: row.customer_id != null ? Number(row.customer_id) : null,
+      amount: input.amount,
+      method: input.method,
+      transactionRef: input.transactionRef,
+    });
+
+    // Re-read rather than subtracting locally, so the counter sees what Swipe
+    // actually believes (staff may have taken part of it there too).
+    const after = await findTransactionBySerial(serial);
+    const amountDue = after ? pendingFromRow(after.row) : Math.max(0, pending - input.amount);
+    return { invoiceNumber: serial, amountDue, paid: amountDue <= 0 };
   },
 
   async createMembershipPunch(input: MembershipPunchInput): Promise<{ invoiceNumber: string }> {

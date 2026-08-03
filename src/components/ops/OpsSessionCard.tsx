@@ -33,6 +33,8 @@ interface OpsSessionCardProps {
   onCheckout: (session: OpsSession, undo: boolean) => void;
   /** Open the invoice's line items; omitted for sessions with no invoice. */
   onShowInvoice?: (session: OpsSession) => void;
+  /** Take payment against this session's invoice. */
+  onCollect?: (session: OpsSession) => void;
 }
 
 export default function OpsSessionCard({
@@ -41,6 +43,7 @@ export default function OpsSessionCard({
   onUndoCheckIn,
   onCheckout,
   onShowInvoice,
+  onCollect,
 }: OpsSessionCardProps) {
   const [now, setNow] = useState(Date.now());
   const status = computeOpsStatus(session, now);
@@ -158,6 +161,17 @@ export default function OpsSessionCard({
         {session.parentName}
         {session.phone && ` · ${session.phone}`}
       </div>
+
+      {/* Money owed is collectable from the card, whatever the play state —
+          it's the same counter conversation as check-in. */}
+      {onCollect && !session.isManual && session.amountDue > 0 && status !== "checked_out" && (
+        <button
+          onClick={() => onCollect(session)}
+          className="mt-2 w-full rounded-full bg-green py-2 text-sm font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
+        >
+          Collect ₹{session.amountDue.toLocaleString("en-IN")}
+        </button>
+      )}
 
       {/* Actions */}
       {status === "waiting" ? (

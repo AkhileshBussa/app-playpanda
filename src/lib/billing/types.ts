@@ -79,6 +79,32 @@ export interface MembershipPunchInput {
   notes?: string;
 }
 
+/** Payment methods the counter can collect in. */
+export const PAYMENT_METHODS = ["Cash", "Card", "UPI"] as const;
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+
+/**
+ * A payment taken at the counter, against an invoice the staff can see rather
+ * than the opaque booking `ref` (which only the booking flow holds).
+ */
+export interface CollectPaymentInput {
+  /** Human invoice number, e.g. "INV-1712". */
+  invoiceNumber: string;
+  /** Amount collected now, INR. May be part of the outstanding balance. */
+  amount: number;
+  method: PaymentMethod;
+  /** UPI/card reference, if the counter noted one. */
+  transactionRef?: string;
+}
+
+/** State of the invoice after a payment lands. */
+export interface PaymentResult {
+  invoiceNumber: string;
+  /** Still outstanding, INR — 0 once settled. */
+  amountDue: number;
+  paid: boolean;
+}
+
 /**
  * A membership SALE invoice from today — what the manager billed at the
  * counter before recording the membership. Offered as a pick-list so the sale
@@ -191,6 +217,12 @@ export interface BillingProvider {
 
   /** Record a collected payment against the booking (marks the invoice paid). */
   recordPayment(input: RecordPaymentInput): Promise<void>;
+
+  /**
+   * Record a payment taken at the counter, addressed by invoice number.
+   * Rejects more than the outstanding balance. Returns what's left owing.
+   */
+  collectPayment(input: CollectPaymentInput): Promise<PaymentResult>;
 
   /**
    * Punch one membership visit: upsert the customer and create the ₹0 invoice
