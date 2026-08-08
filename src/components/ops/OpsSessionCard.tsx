@@ -7,6 +7,7 @@ import {
   opsStartTime,
   type OpsSession,
 } from "@/lib/ops/types";
+import { bandForEnd } from "@/lib/ops/bands";
 
 function formatTime(ms: number): string {
   return new Date(ms).toLocaleTimeString("en-IN", {
@@ -16,13 +17,17 @@ function formatTime(ms: number): string {
   });
 }
 
+/** Minutes are zero-padded so the countdown keeps its width all the way down —
+ *  an unpadded 10:00 → 9:59 shortens the string and slides every digit left,
+ *  which reads as movement on a board someone is watching from the counter. */
 function formatCountdown(diffMs: number): string {
   const totalSec = Math.abs(Math.floor(diffMs / 1000));
   const hrs = Math.floor(totalSec / 3600);
   const mins = Math.floor((totalSec % 3600) / 60);
   const secs = totalSec % 60;
-  if (hrs > 0) return `${hrs}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
-  return `${mins}:${String(secs).padStart(2, "0")}`;
+  const mm = String(mins).padStart(2, "0");
+  const ss = String(secs).padStart(2, "0");
+  return hrs > 0 ? `${hrs}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
 interface OpsSessionCardProps {
@@ -31,6 +36,10 @@ interface OpsSessionCardProps {
   onCheckIn: (session: OpsSession, code: string) => Promise<string | null>;
   onUndoCheckIn: (session: OpsSession) => void;
   onCheckout: (session: OpsSession, undo: boolean) => void;
+  /** Open the invoice's line items; omitted for sessions with no invoice. */
+  onShowInvoice?: (session: OpsSession) => void;
+  /** Take payment against this session's invoice. */
+  onCollect?: (session: OpsSession) => void;
 }
 
 export default function OpsSessionCard({
@@ -38,6 +47,8 @@ export default function OpsSessionCard({
   onCheckIn,
   onUndoCheckIn,
   onCheckout,
+  onShowInvoice,
+  onCollect,
 }: OpsSessionCardProps) {
   const [now, setNow] = useState(Date.now());
   const status = computeOpsStatus(session, now);
@@ -56,105 +67,203 @@ export default function OpsSessionCard({
   // the palette's membership color, whether the punch visit is timed or not.
   const membership = session.isMembership || untimed;
 
+  // Wristband color for the weekend rush — the status colors below stay as they
+  // are, so a card still says both "which band" and "how long left". Nothing to
+  // sweep for once they've left.
+  const band = status === "checked_out" ? null : bandForEnd(end);
+
   // Palette-only theming per status (brand rule: no colors outside the palette).
   const theme = {
-    waiting: { card: "border-purple/50 bg-purple/10", timer: "text-purple" },
+    waiting: { card: "border-purple/50 bg-purple/10", timer: "text-purple", bar: "bg-purple" },
     active: membership
-      ? { card: "border-teal/50 bg-teal/10", timer: "text-teal" }
-      : { card: "border-green/50 bg-green/10", timer: "text-green" },
-    expiring: { card: "border-yellow bg-yellow/15", timer: "text-brown" },
-    expired: { card: "border-coral/60 bg-coral/10", timer: "text-coral" },
-    checked_out: { card: "border-ink/10 bg-white opacity-60", timer: "text-ink/40" },
+      ? { card: "border-teal/50 bg-teal/10", timer: "text-teal", bar: "bg-teal" }
+      : { card: "border-green/50 bg-green/10", timer: "text-green", bar: "bg-green" },
+    expiring: { card: "border-yellow bg-yellow/15", timer: "text-brown", bar: "bg-yellow" },
+    expired: { card: "border-coral/60 bg-coral/10", timer: "text-coral", bar: "bg-coral" },
+    checked_out: { card: "border-ink/10 bg-white opacity-60", timer: "text-ink/40", bar: "bg-ink/30" },
   }[status];
+
+  // How much of the booked time has been used, 0–1. Gives the countdown a shape
+  // you can read across the room, where four digits all look alike — a bar
+  // that's nearly full says "wrap up" before anyone has focused on the number.
+  // Null whenever there's no span to be a fraction of: waiting, untimed
+  // membership visits, and sessions that have already left.
+  const span = start != null && end != null ? end - start : 0;
+  const progress =
+    span > 0 && status !== "checked_out"
+      ? Math.min(Math.max((now - start!) / span, 0), 1)
+      : null;
 
   const kidNamesDisplay =
     session.kidNames.length > 0 ? session.kidNames.join(", ") : session.parentName || "—";
 
+  // Manual membership visits have no invoice behind them, so there's nothing
+  // for them to open.
+  const showInvoice = onShowInvoice && !session.isManual ? () => onShowInvoice(session) : null;
+
   return (
-    <div className={`flex flex-col rounded-2xl border-2 p-3 transition-all duration-300 ${theme.card}`}>
-      {/* Kid names | kid count */}
-      <div className="mb-1.5 flex items-start gap-2">
-        <div
-          className={`min-w-0 flex-1 break-words text-lg font-black leading-tight ${
-            status === "checked_out" ? "text-ink/40 line-through" : "text-ink"
-          }`}
-        >
-          {kidNamesDisplay}
-        </div>
-        <div className={`flex shrink-0 items-baseline gap-1 ${theme.timer}`}>
-          <span className="text-2xl font-black leading-none">{session.kidCount}</span>
-          <span className="text-xs font-bold">{session.kidCount === 1 ? "Kid" : "Kids"}</span>
-        </div>
-      </div>
+    <div
+      // The max-width only bites in the narrow single-column band between the
+      // phone breakpoint and ~750px, where one track would otherwise stretch a
+      // card the full width of the screen. Above that the grid's own tracks are
+      // always narrower than this, so it never strands slack inside a track.
+      className={`flex max-w-[460px] flex-col rounded-2xl border-2 p-3 transition-all duration-300 ${theme.card}`}
+    >
+      {/* Everything above the buttons opens the invoice. Deliberately NOT the
+          whole card: the buttons live in the bottom strip, and when that strip
+          was inside the click target a thumb that landed just off Check Out
+          threw an invoice sheet over the board instead. Worse with an early
+          checkout, where the confirm gives you two chances to miss.
 
-      {/* Badges: membership marker + amount due (partial payments show the remainder) */}
-      {((session.isMembership && status !== "checked_out") ||
-        (session.amountDue > 0 && status !== "checked_out")) && (
-        <div className="mb-1.5 flex flex-wrap gap-1.5">
-          {session.isMembership && (
-            <span className="rounded-full bg-teal px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-cream">
-              Member
-            </span>
-          )}
-          {session.amountDue > 0 && (
-            <span className="rounded-full bg-yellow px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-ink">
-              ₹{session.amountDue.toLocaleString("en-IN")} due
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* Timer / waiting state */}
-      <div className="flex-1 text-center">
-        {status === "waiting" ? (
-          <div className="py-1">
-            <div className="text-base font-black uppercase tracking-widest text-purple">
-              Waiting
-            </div>
-            <div className="mt-0.5 text-sm font-bold text-ink/50">
-              Booked {formatTime(session.bookedAt)} · {session.invoiceNumber}
-            </div>
+          Drawing the boundary here means the miss zone around a button belongs
+          to the button's own strip, so nothing needs to swallow clicks. */}
+      <div
+        onClick={showInvoice ?? undefined}
+        title={showInvoice ? `See what's on ${session.invoiceNumber}` : undefined}
+        className={`flex flex-1 flex-col ${showInvoice ? "cursor-pointer" : ""}`}
+      >
+        {/* Wristband: the color stamped on this session's bands, named out loud so
+            it survives bad lighting and color blindness. */}
+        {band && (
+          <div
+            className={`-mx-3 -mt-3 mb-2 rounded-t-xl px-2 py-1 text-center ${band.chip}`}
+          >
+            <div className="text-sm font-black uppercase tracking-wide">{band.label} band</div>
+            <div className="text-[11px] font-bold opacity-75">Out by {band.outBy}</div>
           </div>
-        ) : (
-          <>
-            <div className={`font-mono text-3xl font-black ${theme.timer}`}>
-              {status === "checked_out"
-                ? "Left"
-                : untimed
-                  ? "Member"
-                  : `${end! - now <= 0 ? "-" : ""}${formatCountdown(end! - now)}`}
-            </div>
-            {status !== "checked_out" && !untimed && start != null && (
-              <div className="mt-0.5 text-sm font-bold text-ink/50">
-                {formatTime(start)} → {formatTime(end!)}
-              </div>
-            )}
-          </>
         )}
+
+        {/* Kid names | kid count. Still a real button when there's an invoice —
+            the body responds to a pointer, but a keyboard needs something it
+            can tab to and press. It stops the click so the body's handler
+            doesn't fire a second time for the same tap. */}
+        {(() => {
+          const header = (
+            <>
+              <div
+                className={`min-w-0 flex-1 break-words text-lg font-black leading-tight ${
+                  status === "checked_out" ? "text-ink/40 line-through" : "text-ink"
+                }`}
+              >
+                {kidNamesDisplay}
+              </div>
+              <div className={`flex shrink-0 items-baseline gap-1 ${theme.timer}`}>
+                <span className="text-2xl font-black leading-none">{session.kidCount}</span>
+                <span className="text-xs font-bold">{session.kidCount === 1 ? "Kid" : "Kids"}</span>
+              </div>
+            </>
+          );
+          return showInvoice ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                showInvoice();
+              }}
+              title={`See what's on ${session.invoiceNumber}`}
+              className="mb-1.5 flex w-full items-start gap-2 text-left"
+            >
+              {header}
+            </button>
+          ) : (
+            <div className="mb-1.5 flex items-start gap-2">{header}</div>
+          );
+        })()}
+
+        {/* Badges: membership marker + amount due (partial payments show the remainder) */}
+        {((session.isMembership && status !== "checked_out") ||
+          (session.amountDue > 0 && status !== "checked_out")) && (
+          <div className="mb-1.5 flex flex-wrap gap-1.5">
+            {session.isMembership && (
+              <span className="rounded-full bg-teal px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-cream">
+                Member
+              </span>
+            )}
+            {session.amountDue > 0 && (
+              <span className="rounded-full bg-yellow px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-ink">
+                ₹{session.amountDue.toLocaleString("en-IN")} due
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Timer / waiting state */}
+        <div className="flex-1 text-center">
+          {status === "waiting" ? (
+            <div className="py-1">
+              <div className="text-base font-black uppercase tracking-widest text-purple">
+                Waiting
+              </div>
+              <div className="mt-0.5 text-sm font-bold text-ink/50">
+                Booked {formatTime(session.bookedAt)} · {session.invoiceNumber}
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className={`font-mono text-3xl font-black ${theme.timer}`}>
+                {status === "checked_out"
+                  ? "Left"
+                  : untimed
+                    ? "Member"
+                    : `${end! - now <= 0 ? "-" : ""}${formatCountdown(end! - now)}`}
+              </div>
+              {progress != null && (
+                <div
+                  role="presentation"
+                  className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-ink/10"
+                >
+                  <div
+                    className={`h-full rounded-full transition-[width] duration-1000 ease-linear ${theme.bar}`}
+                    style={{ width: `${progress * 100}%` }}
+                  />
+                </div>
+              )}
+              {status !== "checked_out" && !untimed && start != null && (
+                <div className="mt-0.5 text-sm font-bold text-ink/50">
+                  {formatTime(start)} → {formatTime(end!)}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Parent */}
+        <div className="mt-1.5 truncate text-xs font-bold leading-tight text-ink/40">
+          {session.parentName}
+          {session.phone && ` · ${session.phone}`}
+        </div>
       </div>
 
-      {/* Parent */}
-      <div className="mt-1.5 truncate text-xs font-bold leading-tight text-ink/40">
-        {session.parentName}
-        {session.phone && ` · ${session.phone}`}
-      </div>
+      {/* Money owed is collectable from the card, whatever the play state —
+          it's the same counter conversation as check-in. */}
+      {onCollect && !session.isManual && session.amountDue > 0 && status !== "checked_out" && (
+        <button
+          onClick={() => onCollect(session)}
+          className="mt-2 w-full rounded-full bg-green py-2 text-sm font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
+        >
+          Collect ₹{session.amountDue.toLocaleString("en-IN")}
+        </button>
+      )}
 
       {/* Actions */}
       {status === "waiting" ? (
         <CheckInForm session={session} onCheckIn={onCheckIn} />
+      ) : status === "checked_out" ? (
+        <button
+          onClick={() => onCheckout(session, true)}
+          className="mt-2 w-full rounded-full border-2 border-transparent bg-ink/10 py-2 text-sm font-black text-ink/60 transition-colors hover:bg-ink/20"
+        >
+          Undo
+        </button>
       ) : (
         <>
-          <button
-            onClick={() => onCheckout(session, status === "checked_out")}
-            className={`mt-2 w-full rounded-full py-2 text-sm font-black transition-colors ${
-              status === "checked_out"
-                ? "bg-ink/10 text-ink/60 hover:bg-ink/20"
-                : "bg-ink text-cream hover:bg-ink/80"
-            }`}
-          >
-            {status === "checked_out" ? "Undo" : "Check Out"}
-          </button>
-          {status !== "checked_out" && session.needsCheckIn && session.checkinAt != null && (
+          {/* `active` is precisely "more than the expiring window left", so it
+              doubles as the test for a checkout that's probably a misclick. */}
+          <CheckoutButton
+            early={status === "active"}
+            onCheckout={() => onCheckout(session, false)}
+          />
+          {session.needsCheckIn && session.checkinAt != null && (
             <button
               onClick={() => onUndoCheckIn(session)}
               className="mt-1.5 text-xs font-bold text-ink/40 underline-offset-2 hover:underline"
@@ -165,6 +274,55 @@ export default function OpsSessionCard({
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Check Out, weighted by how likely the tap is to be the one intended.
+ *
+ * Ending a session that still has real time on it is almost never deliberate —
+ * it's a thumb landing on the wrong card in a grid of near-identical ones. So
+ * those get the quiet outline treatment and cost a second tap. Once a session
+ * is expiring or expired, checking out is the expected next thing to do, so the
+ * button is filled and fires immediately.
+ *
+ * The confirm is a second tap on the same button rather than a sheet: the hand
+ * is already there, and a modal over a board that's being read by two people is
+ * a worse interruption than the misclick it prevents.
+ */
+function CheckoutButton({ early, onCheckout }: { early: boolean; onCheckout: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+
+  // Disarm on its own. A card left sitting in "Tap to confirm" is a trap for
+  // whoever picks the tablet up next and taps what looks like Check Out.
+  useEffect(() => {
+    if (!confirming) return;
+    const t = setTimeout(() => setConfirming(false), 3000);
+    return () => clearTimeout(t);
+  }, [confirming]);
+
+  const base =
+    "mt-2 w-full rounded-full border-2 py-2 text-sm font-black transition-colors";
+
+  if (!early) {
+    return (
+      <button onClick={onCheckout} className={`${base} border-ink bg-ink text-cream hover:bg-ink/80`}>
+        Check Out
+      </button>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => (confirming ? onCheckout() : setConfirming(true))}
+      className={`${base} ${
+        confirming
+          ? "border-ink bg-ink text-cream"
+          : "border-ink/20 text-ink/50 hover:border-ink/40 hover:bg-ink/5"
+      }`}
+    >
+      {confirming ? "Tap to confirm" : "Check Out"}
+    </button>
   );
 }
 

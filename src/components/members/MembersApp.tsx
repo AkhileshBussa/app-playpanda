@@ -1,0 +1,324 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import type { Membership, MembershipStatus, MembershipVisit } from "@/lib/members/types";
+import { normalizePhone } from "@/lib/members/types";
+import MembersTabs from "./MembersTabs";
+import RecordVisitSheet from "./RecordVisitSheet";
+
+/** Membership as the lookup API returns it — with computed status + visits. */
+export interface ApiMembership extends Membership {
+  playsLeft: number | null;
+  status: MembershipStatus;
+  visits: MembershipVisit[];
+}
+
+interface LookupResult {
+  phone: string;
+  customer: { name: string; kidNames: string[] } | null;
+  memberships: ApiMembership[];
+}
+
+const inputClass =
+  "w-full rounded-2xl border-2 border-ink/10 bg-cream/60 px-4 py-3.5 text-base font-bold text-ink outline-none placeholder:font-bold placeholder:text-ink/30 focus:border-coral";
+
+const prettyDate = (d: string) =>
+  new Date(`${d}T12:00:00+05:30`).toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "Asia/Kolkata",
+  });
+
+const STATUS_STYLE: Record<MembershipStatus, { label: string; className: string }> = {
+  active: { label: "Active", className: "bg-green/15 text-green" },
+  expired: { label: "Expired", className: "bg-coral/15 text-coral" },
+  exhausted: { label: "Used up", className: "bg-ink/10 text-ink/50" },
+  deleted: { label: "Deleted", className: "bg-ink/70 text-cream" },
+};
+
+export default function MembersApp() {
+  const [phone, setPhone] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [result, setResult] = useState<LookupResult | null>(null);
+  const [visitFor, setVisitFor] = useState<ApiMembership | null>(null);
+  const searchRef = useRef<((p: string) => void) | null>(null);
+
+  const lookup = useCallback(async (rawPhone: string): Promise<LookupResult | null> => {
+    const p = normalizePhone(rawPhone);
+    const res = await fetch(`/api/members/lookup?phone=${p}`, { cache: "no-store" });
+    if (res.status === 401) {
+      window.location.reload();
+      return null;
+    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Couldn't look that up — please try again");
+    return data as LookupResult;
+  }, []);
+
+  const runSearch = useCallback(
+    async (rawPhone: string) => {
+      const p = normalizePhone(rawPhone);
+      if (!/^\d{10}$/.test(p)) {
+        setError("Enter a 10-digit phone number");
+        return;
+      }
+      setSearching(true);
+      setError(null);
+      try {
+        const data = await lookup(p);
+        if (data) setResult(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Couldn't look that up — please try again");
+      } finally {
+        setSearching(false);
+      }
+    },
+    [lookup]
+  );
+  searchRef.current = runSearch;
+
+  const search = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    setNotice(null);
+    runSearch(phone);
+  };
+
+  // Arriving from the new-membership form (?phone=…&created=1): show that
+  // member straight away so the counter is ready to punch.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const p = normalizePhone(params.get("phone") ?? "");
+    if (!/^\d{10}$/.test(p)) return;
+    setPhone(p);
+    if (params.get("created")) setNotice("Membership saved — ready to punch a visit.");
+    searchRef.current?.(p);
+    // Drop the params so a refresh doesn't replay the "saved" notice.
+    window.history.replaceState({}, "", "/members");
+  }, []);
+
+  /** Silent re-fetch after a create/punch so counts reconcile with the server. */
+  const refresh = useCallback(async () => {
+    if (!result) return;
+    try {
+      const data = await lookup(result.phone);
+      if (data) setResult(data);
+    } catch {
+      // Transient — the optimistic update already shows the right state.
+    }
+  }, [result, lookup]);
+
+  return (
+    <main className="mx-auto flex w-full max-w-6xl flex-col px-5 pb-16 pt-6">
+      {/* The nav already names the tool; keep the heading for screen readers. */}
+      <header className="text-center">
+        <h1 className="sr-only">Memberships</h1>
+        <p className="text-sm font-bold text-ink/60">
+          Look up a member, punch visits, add new members
+        </p>
+      </header>
+
+      <div className="mt-3 flex justify-center">
+        <MembersTabs />
+      </div>
+
+      {/* Search — capped so the input doesn't stretch across a wide screen. */}
+      <form
+        onSubmit={search}
+        className="mx-auto mt-4 w-full rounded-chunk bg-white p-4 shadow-chunk lg:max-w-2xl"
+      >
+        <label className="mb-1 block px-1 text-sm font-bold uppercase tracking-widest text-ink/50">
+          Member phone number
+        </label>
+        <div className="flex gap-2">
+          <input
+            type="tel"
+            inputMode="numeric"
+            value={phone}
+            onChange={(e) => {
+              setPhone(e.target.value);
+              setError(null);
+            }}
+            placeholder="e.g. 9959060208"
+            autoFocus
+            className={`${inputClass} min-w-0 flex-1`}
+          />
+          <button
+            type="submit"
+            disabled={searching}
+            className="shrink-0 rounded-full bg-coral px-6 text-base font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed disabled:opacity-50"
+          >
+            {searching ? "…" : "Find"}
+          </button>
+        </div>
+        {error && <p className="mt-2 px-1 text-sm font-bold text-coral">{error}</p>}
+        {notice && (
+          <p className="mt-2 rounded-2xl bg-teal/15 px-3 py-2 text-sm font-bold text-ink/80">{notice}</p>
+        )}
+      </form>
+
+      {/* Results */}
+      {result && (
+        <div className="mt-5 flex flex-col gap-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-teal px-3 py-1 text-sm font-black text-cream">
+              {result.memberships.length} membership{result.memberships.length === 1 ? "" : "s"}
+            </span>
+            {result.customer && (
+              <span className="min-w-0 truncate text-sm font-bold text-ink/60">
+                {result.customer.name}
+                {result.customer.kidNames.length > 0 && ` · ${result.customer.kidNames.join(", ")}`}
+              </span>
+            )}
+          </div>
+
+          {result.memberships.length === 0 ? (
+            /* Nothing to punch, so creating is the only useful next step. */
+            <div className="mx-auto w-full max-w-2xl rounded-chunk border-2 border-dashed border-teal/50 bg-teal/5 p-8 text-center">
+              <p className="text-base font-black text-ink">No memberships on this number yet</p>
+              <Link
+                href={`/members/new?phone=${result.phone}`}
+                className="mt-4 inline-block rounded-full bg-coral px-7 py-3 text-base font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
+              >
+                + New membership
+              </Link>
+            </div>
+          ) : (
+          /* One membership fills the column under the search; several tile. */
+          <div
+            className={
+              result.memberships.length === 1
+                ? "mx-auto w-full max-w-2xl"
+                : result.memberships.length === 2
+                  ? "grid items-start gap-4 sm:grid-cols-2"
+                  : "grid items-start gap-4 sm:grid-cols-2 xl:grid-cols-3"
+            }
+          >
+          {result.memberships.map((m) => {
+            const status = STATUS_STYLE[m.status];
+            const pct =
+              m.totalPlays == null ? 100 : Math.round(((m.playsLeft ?? 0) / m.totalPlays) * 100);
+            return (
+              <section key={m.id} className="rounded-chunk bg-white p-5 shadow-chunk">
+                {/* The card body opens the membership: full punch history + deletes. */}
+                <Link href={`/members/${m.id}`} className="block">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h2 className="truncate text-xl font-black text-ink">{m.planName}</h2>
+                    <p className="text-sm font-bold text-ink/60">
+                      {m.customerName}
+                      {m.kidNames && ` · ${m.kidNames}`}
+                    </p>
+                  </div>
+                  <span
+                    className={`shrink-0 rounded-full px-3 py-1 text-xs font-black uppercase tracking-wide ${status.className}`}
+                  >
+                    {status.label}
+                  </span>
+                </div>
+
+                {/* Plays */}
+                <div className="mt-3">
+                  {m.totalPlays == null ? (
+                    <p className="text-base font-black text-ink">
+                      Unlimited plays
+                      <span className="font-bold text-ink/50"> · once a day</span>
+                    </p>
+                  ) : (
+                    <>
+                      <div className="flex items-baseline justify-between">
+                        <p className="text-base font-black text-ink">
+                          {m.playsLeft} of {m.totalPlays} plays left
+                        </p>
+                        <p className="text-xs font-bold text-ink/50">{m.playsUsed} used</p>
+                      </div>
+                      <div className="mt-1.5 h-2.5 overflow-hidden rounded-full bg-ink/10">
+                        <div
+                          className="h-full rounded-full bg-teal transition-all"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Facts */}
+                <div className="mt-3 flex flex-wrap gap-1.5 text-xs font-black">
+                  <span className="rounded-full bg-cream px-2.5 py-1 text-ink/60">
+                    {m.hoursPerPlay} hr{m.hoursPerPlay === 1 ? "" : "s"}/play
+                  </span>
+                  {m.kidsPerPlay > 1 && (
+                    <span className="rounded-full bg-cream px-2.5 py-1 text-ink/60">
+                      {m.kidsPerPlay} kids/play
+                    </span>
+                  )}
+                  {m.weekdaysOnly && (
+                    <span className="rounded-full bg-yellow/25 px-2.5 py-1 text-brown">Mon–Fri only</span>
+                  )}
+                  <span
+                    className={`rounded-full px-2.5 py-1 ${
+                      m.status === "expired" ? "bg-coral/15 text-coral" : "bg-cream text-ink/60"
+                    }`}
+                  >
+                    {m.status === "expired" ? "Expired" : "Expires"} {prettyDate(m.expiresOn)}
+                  </span>
+                </div>
+
+                {m.deletedAt != null && m.deletedReason && (
+                  <p className="mt-3 truncate text-xs font-bold text-ink/40">
+                    {m.deletedReason}
+                  </p>
+                )}
+                </Link>
+
+                {/* Actions */}
+                <div className="mt-4 flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={m.status !== "active"}
+                    onClick={() => setVisitFor(m)}
+                    className="flex-1 rounded-full bg-teal py-3 text-base font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed disabled:opacity-40 disabled:shadow-none"
+                  >
+                    Punch a visit
+                  </button>
+                  <Link
+                    href={`/members/${m.id}`}
+                    className="shrink-0 rounded-full bg-cream px-4 py-3 text-sm font-black text-ink/60 transition-all active:translate-y-0.5"
+                  >
+                    Punches ({m.visits.filter((v) => v.deletedAt == null).length})
+                  </Link>
+                </div>
+              </section>
+            );
+          })}
+          </div>
+          )}
+        </div>
+      )}
+
+      {!result && (
+        <p className="mt-8 text-center text-sm font-bold text-ink/40">
+          Search a phone number to see their memberships and visits.
+        </p>
+      )}
+
+      {visitFor && (
+        <RecordVisitSheet
+          open
+          membership={visitFor}
+          onClose={() => setVisitFor(null)}
+          onRecorded={(v) => {
+            setVisitFor(null);
+            setNotice(
+              `Visit punched${v.punchInvoiceNumber ? ` — ${v.punchInvoiceNumber}` : ""}. Session is live on the monitor.`
+            );
+            refresh();
+          }}
+        />
+      )}
+    </main>
+  );
+}

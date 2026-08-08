@@ -1,0 +1,202 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+import { isOpsAuthed } from "@/lib/ops/auth";
+import { todayIST } from "@/lib/ops/state";
+import { listAllMemberships, membersDbConfigured } from "@/lib/members/db";
+import { membershipStatus, playsLeft, type Membership, type MembershipStatus } from "@/lib/members/types";
+import OpsLoginGate from "@/components/ops/OpsLoginGate";
+import OpsNav from "@/components/ops/OpsNav";
+import MembersTabs from "@/components/members/MembersTabs";
+
+export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = {
+  title: "Play Panda — All Members",
+  robots: { index: false, follow: false },
+};
+
+const prettyDate = (d: string) =>
+  new Date(`${d}T12:00:00+05:30`).toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "Asia/Kolkata",
+  });
+
+const STATUS_STYLE: Record<MembershipStatus, { label: string; className: string }> = {
+  active: { label: "Active", className: "bg-green/15 text-green" },
+  expired: { label: "Expired", className: "bg-coral/15 text-coral" },
+  exhausted: { label: "Used up", className: "bg-ink/10 text-ink/50" },
+  deleted: { label: "Deleted", className: "bg-ink/70 text-cream" },
+};
+
+const playsLabel = (m: Membership) => {
+  const left = playsLeft(m);
+  return left == null ? "Unlimited · 1/day" : `${left} of ${m.totalPlays}`;
+};
+
+/** The full membership ledger — every member, plays left, expiry. CSV export. */
+export default async function MembersListPage() {
+  if (!(await isOpsAuthed())) return <OpsLoginGate />;
+
+  let memberships: Membership[] = [];
+  let loadError: string | null = null;
+  if (!membersDbConfigured()) {
+    loadError = "Membership database not set up yet — set DATABASE_URL (see docs/memberships.md).";
+  } else {
+    try {
+      memberships = await listAllMemberships();
+    } catch (err) {
+      console.error("failed to load members ledger:", err);
+      loadError = "Couldn't load the ledger — please refresh.";
+    }
+  }
+
+  const today = todayIST();
+  const rows = memberships.map((m) => ({ ...m, status: membershipStatus(m, today) }));
+  const activeCount = rows.filter((m) => m.status === "active").length;
+  const deletedCount = rows.filter((m) => m.status === "deleted").length;
+
+  return (
+    <>
+      <OpsNav />
+      <main className="mx-auto flex w-full max-w-6xl flex-col px-5 pb-16 pt-6">
+        {/* The nav and section tab already name this; heading stays for screen readers. */}
+        <header className="text-center">
+          <h1 className="sr-only">All members</h1>
+          <p className="text-sm font-bold text-ink/60">
+            Every membership, newest first · plays left &amp; expiry
+          </p>
+        </header>
+
+        <div className="mt-4 flex justify-center">
+          <MembersTabs />
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          <span className="rounded-full bg-teal px-3 py-1 text-sm font-black text-cream">
+            {rows.length - deletedCount} member{rows.length - deletedCount === 1 ? "" : "s"}
+          </span>
+          <span className="rounded-full bg-green/15 px-3 py-1 text-sm font-black text-green">
+            {activeCount} active
+          </span>
+          {deletedCount > 0 && (
+            <span className="rounded-full bg-ink/10 px-3 py-1 text-sm font-black text-ink/50">
+              {deletedCount} deleted
+            </span>
+          )}
+        </div>
+
+        {loadError ? (
+          <p className="mt-8 text-center text-sm font-bold text-coral">{loadError}</p>
+        ) : rows.length === 0 ? (
+          <p className="mt-8 text-center text-sm font-bold text-ink/40">
+            No memberships recorded yet — add the first one from the counter.
+          </p>
+        ) : (
+          <>
+            {/* Desktop: a proper ledger table. */}
+            <div className="mt-4 hidden overflow-x-auto rounded-chunk bg-white shadow-chunk md:block">
+              <table className="w-full min-w-[52rem] border-collapse text-left">
+                <thead>
+                  <tr className="border-b-2 border-ink/5 text-xs font-black uppercase tracking-widest text-ink/40">
+                    <th className="px-5 py-3">Customer</th>
+                    <th className="px-5 py-3">Phone</th>
+                    <th className="px-5 py-3">Plan</th>
+                    <th className="px-5 py-3">Status</th>
+                    <th className="px-5 py-3">Plays left</th>
+                    <th className="px-5 py-3">Expires</th>
+                    <th className="px-5 py-3">Sale invoice</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-ink/5">
+                  {rows.map((m) => (
+                    <tr key={m.id} className={`align-middle ${m.status === "deleted" ? "opacity-60" : ""}`}>
+                      <td className="px-5 py-3">
+                        <Link href={`/members/${m.id}`} className="block">
+                          <span
+                            className={`block font-black text-ink ${m.status === "deleted" ? "line-through" : "underline decoration-ink/20 underline-offset-4"}`}
+                          >
+                            {m.customerName}
+                          </span>
+                          {m.kidNames && (
+                            <span className="block text-xs font-bold text-ink/45">{m.kidNames}</span>
+                          )}
+                        </Link>
+                      </td>
+                      <td className="whitespace-nowrap px-5 py-3 text-sm font-bold tabular-nums text-ink/70">
+                        {m.phone}
+                      </td>
+                      <td className="px-5 py-3 text-sm font-bold text-ink/70">{m.planName}</td>
+                      <td className="px-5 py-3">
+                        <span
+                          className={`inline-block rounded-full px-2.5 py-1 text-xs font-black uppercase tracking-wide ${STATUS_STYLE[m.status].className}`}
+                        >
+                          {STATUS_STYLE[m.status].label}
+                        </span>
+                      </td>
+                      <td className="whitespace-nowrap px-5 py-3 text-sm font-black tabular-nums text-ink">
+                        {playsLabel(m)}
+                      </td>
+                      <td className="whitespace-nowrap px-5 py-3 text-sm font-bold tabular-nums text-ink/70">
+                        {prettyDate(m.expiresOn)}
+                      </td>
+                      <td className="whitespace-nowrap px-5 py-3 text-sm font-bold text-ink/45">
+                        {m.saleInvoiceNumber || "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile: the same rows as chunky cards. */}
+            <ul className="mt-4 flex flex-col gap-3 md:hidden">
+              {rows.map((m) => (
+                <li key={m.id} className={`rounded-chunk bg-white p-4 shadow-chunk ${m.status === "deleted" ? "opacity-60" : ""}`}>
+                  <Link href={`/members/${m.id}`} className="block">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p
+                        className={`truncate text-base font-black text-ink ${m.status === "deleted" ? "line-through" : ""}`}
+                      >
+                        {m.customerName}
+                      </p>
+                      <p className="text-sm font-bold text-ink/60">
+                        {m.phone} · {m.planName}
+                      </p>
+                    </div>
+                    <span
+                      className={`shrink-0 rounded-full px-3 py-1 text-xs font-black uppercase tracking-wide ${STATUS_STYLE[m.status].className}`}
+                    >
+                      {STATUS_STYLE[m.status].label}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5 text-xs font-black text-ink/60">
+                    <span className="rounded-full bg-cream px-2.5 py-1">
+                      {playsLeft(m) == null
+                        ? "Unlimited · 1/day"
+                        : `${playsLeft(m)} of ${m.totalPlays} plays left`}
+                    </span>
+                    <span className="rounded-full bg-cream px-2.5 py-1">
+                      {m.status === "expired" ? "Expired" : "Expires"} {prettyDate(m.expiresOn)}
+                    </span>
+                    {m.saleInvoiceNumber && (
+                      <span className="rounded-full bg-cream px-2.5 py-1">{m.saleInvoiceNumber}</span>
+                    )}
+                  </div>
+                  {m.status === "deleted" && m.deletedReason && (
+                    <p className="mt-2 text-xs font-bold text-ink/40">
+                      Deleted — {m.deletedReason}
+                    </p>
+                  )}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </main>
+    </>
+  );
+}

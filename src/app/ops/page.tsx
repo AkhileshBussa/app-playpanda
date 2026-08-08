@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { isOpsAuthed } from "@/lib/ops/auth";
 import OpsDashboard from "@/components/ops/OpsDashboard";
 import OpsLoginGate from "@/components/ops/OpsLoginGate";
+import OpsNav from "@/components/ops/OpsNav";
 
 export const dynamic = "force-dynamic";
 
@@ -16,5 +17,12 @@ export const metadata: Metadata = {
  * play timer starts. Counter walk-ins run from invoice time, as in pp-billing.
  */
 export default async function OpsPage() {
-  return (await isOpsAuthed()) ? <OpsDashboard /> : <OpsLoginGate />;
+  if (!(await isOpsAuthed())) return <OpsLoginGate />;
+
+  return (
+    <>
+      <OpsNav />
+      <OpsDashboard />
+    </>
+  );
 }

@@ -16,9 +16,13 @@ import type {
   BookingDetails,
   BillingProvider,
   CreateBookingInput,
+  CollectPaymentInput,
   CustomerProfile,
   DaySales,
   InvoiceLine,
+  PaymentResult,
+  MembershipPunchInput,
+  MembershipSaleInvoice,
   RecordPaymentInput,
   TodaySession,
 } from "./types";
@@ -40,6 +44,13 @@ const CHILD_FIELD_IDS = ["3", "5", "7", "9"] as const;
  * and read back on the confirmation screen.
  */
 const VALIDATION_CODE_HEADER = { headerId: 1, name: "Validation Code" } as const;
+/**
+ * Item custom columns in this Swipe account. Written on membership-punch lines
+ * so the ops monitor reads the right per-play duration ("Number of Hours") and
+ * the invoice mirrors what the counter fills in manually ("Number of Plays").
+ */
+const ITEM_COL_HOURS = { id: 12, name: "Number of Hours" } as const;
+const ITEM_COL_PLAYS = { id: 13, name: "Number of Plays" } as const;
 
 class SwipeError extends Error {
   constructor(message: string, readonly status: number, readonly body: unknown) {
@@ -115,6 +126,19 @@ async function swipeCall<T extends SwipeResponse>(
     throw new SwipeError(body.message || `Swipe API error (${res.status})`, res.status, body);
   }
   return body;
+}
+
+/**
+ * Same transport, for Swipe features that aren't billing (expenses live in
+ * ../staff/expenses). Exported so those share this file's token handling and
+ * error shape rather than re-implementing auth against the same account.
+ */
+export async function swipeRequest<T extends object>(
+  prefix: string,
+  action: string,
+  payload: Record<string, unknown>
+): Promise<T> {
+  return swipeCall<T & SwipeResponse>(prefix, action, payload);
 }
 
 /** Today's date in IST, DD-MM-YYYY — the format Swipe expects. */
@@ -329,50 +353,49 @@ interface SwipeRef {
   partyId: number | null;
 }
 
-async function createSwipeInvoice(
-  input: CreateBookingInput,
-  customerId: number | null
-): Promise<{ invoiceNumber: string; docCount: number }> {
+/** Everything that varies between invoice documents (bookings vs punches). */
+interface InvoiceDocOpts {
+  docNumber: number;
+  serialNumber: string;
+  items: ReturnType<typeof toSwipeItem>[];
+  totalAmount: number;
+  taxAmount: number;
+  netAmount: number;
+  partyId: number | null;
+  notes: string;
+  reference: string;
+  documentCustomHeaders: Array<{ header_id: number; value: string }>;
+}
+
+/** The full v3/doc/create payload — shared by bookings and membership punches. */
+function buildInvoiceDoc(opts: InvoiceDocOpts): Record<string, unknown> {
   const date = swipeDateToday();
-  const items = input.lines.map(toSwipeItem);
-  const totalAmount = round2(items.reduce((s, i) => s + i.total_amount, 0));
-  const netAmount = round2(items.reduce((s, i) => s + i.net_amount, 0));
-  const taxAmount = round2(totalAmount - netAmount);
-
-  // The validation code lives ONLY in the document custom header (below). Notes
-  // just carry the kids' names for the counter; reference is a plain label.
-  const kids = input.customer.kidNames.filter(Boolean);
-  const reference = "Play Panda booking";
-  const notes = kids.length ? `Kids: ${kids.join(", ")}` : "";
-
-  const { docNumber, serialNumber } = await getNextInvoiceSerial();
-
-  const build = (docNo: number, serial: string): Record<string, unknown> => ({
+  return {
     id: -1,
     project_id: -1,
     document_type: "invoice",
     invoice_type: "b2b",
     source: 0,
-    doc_number: docNo,
+    doc_number: opts.docNumber,
     suffix: "",
-    serial_number: serial,
+    serial_number: opts.serialNumber,
     document_title: "Invoice",
     doc_without_items: 0,
     party_details: {},
     send_pos_sms: 0,
-    party_ids: customerId != null ? [customerId] : [],
+    party_ids: opts.partyId != null ? [opts.partyId] : [],
     ecommerce_gstin: "",
     ecommerce_name: "",
     document_date: date,
     due_date: date,
-    items,
+    items: opts.items,
     warehouse_id: -1,
-    total_amount: totalAmount,
-    tax_amount: taxAmount,
+    total_amount: opts.totalAmount,
+    tax_amount: opts.taxAmount,
     cess_amount: 0,
     cess_on_qty_value: 0,
     extra_discount: 0,
-    net_amount: netAmount,
+    net_amount: opts.netAmount,
     total_discount: 0,
     discount_type: "total_amount",
     roundoff: 1,
@@ -383,8 +406,8 @@ async function createSwipeInvoice(
     start_subscription_on_payment: 1,
     bank_id: DEFAULT_BANK_ID,
     terms: "",
-    notes,
-    reference,
+    notes: opts.notes,
+    reference: opts.reference,
     is_draft: false,
     is_pos: false,
     skip_warning: false,
@@ -440,22 +463,28 @@ async function createSwipeInvoice(
     document_custom_additional_charges: [],
     document_item_headers: [],
     attachments: [],
-    document_custom_headers: [
-      { header_id: VALIDATION_CODE_HEADER.headerId, value: input.validationCode },
-    ],
+    document_custom_headers: opts.documentCustomHeaders,
     payments: [],
     price_list_id: 0,
     waiting_for_approval: false,
     is_shopify: false,
-  });
+  };
+}
 
-  // The suggested serial can collide (numbering drift / concurrent bookings);
-  // Swipe returns a warning with the correct next number, so retry with it.
-  let res = await swipeCall<CreateResp>("v3/doc", "create", build(docNumber, serialNumber), {
+/**
+ * Create the doc, retrying when the optimistic serial collides (numbering
+ * drift / concurrent bookings) — Swipe returns a warning with the correct next
+ * number, so rebuild with it and try again.
+ */
+async function createDocWithRetry(
+  initial: { docNumber: number; serialNumber: string },
+  build: (docNo: number, serial: string) => Record<string, unknown>
+): Promise<CreateResp> {
+  let res = await swipeCall<CreateResp>("v3/doc", "create", build(initial.docNumber, initial.serialNumber), {
     allowFailure: true,
   });
   for (let tries = 0; res.success === false && res.warning && res.new_serial_number && tries < 4; tries++) {
-    const retry = build(Number(res.new_doc_number) || docNumber, res.new_serial_number);
+    const retry = build(Number(res.new_doc_number) || initial.docNumber, res.new_serial_number);
     retry.skip_warning = true;
     res = await swipeCall<CreateResp>("v3/doc", "create", retry, { allowFailure: true });
   }
@@ -466,10 +495,91 @@ async function createSwipeInvoice(
   }
   const hashId = res.new_hash_id || res.hash_id;
   if (!hashId) throw new Error(`Swipe create did not return a document id: ${JSON.stringify(res)}`);
+  return res;
+}
+
+async function createSwipeInvoice(
+  input: CreateBookingInput,
+  customerId: number | null
+): Promise<{ invoiceNumber: string; docCount: number }> {
+  const items = input.lines.map(toSwipeItem);
+  const totalAmount = round2(items.reduce((s, i) => s + i.total_amount, 0));
+  const netAmount = round2(items.reduce((s, i) => s + i.net_amount, 0));
+  const taxAmount = round2(totalAmount - netAmount);
+
+  // The validation code lives ONLY in the document custom header. Notes just
+  // carry the kids' names for the counter; reference is a plain label.
+  const kids = input.customer.kidNames.filter(Boolean);
+
+  const initial = await getNextInvoiceSerial();
+  const res = await createDocWithRetry(initial, (docNo, serial) =>
+    buildInvoiceDoc({
+      docNumber: docNo,
+      serialNumber: serial,
+      items,
+      totalAmount,
+      taxAmount,
+      netAmount,
+      partyId: customerId,
+      notes: kids.length ? `Kids: ${kids.join(", ")}` : "",
+      reference: "Play Panda booking",
+      documentCustomHeaders: [
+        { header_id: VALIDATION_CODE_HEADER.headerId, value: input.validationCode },
+      ],
+    })
+  );
   return {
-    invoiceNumber: res.serial_number || serialNumber,
+    invoiceNumber: res.serial_number || initial.serialNumber,
     docCount: Number(res.doc_count ?? 0),
   };
+}
+
+/**
+ * Membership visit → ₹0 invoice with the plan's punch product. quantity =
+ * plays consumed. The hour/play custom columns are written per-line so the ops
+ * monitor times the session correctly even for custom plans (whose hours
+ * differ from the punch product's defaults).
+ */
+async function createMembershipPunchInvoice(
+  input: MembershipPunchInput,
+  partyId: number | null
+): Promise<{ invoiceNumber: string }> {
+  const line: InvoiceLine = {
+    sku: input.punch.sku,
+    name: input.punch.name,
+    itemType: "Service",
+    quantity: input.punch.quantity,
+    taxRatePercent: input.punch.taxRatePercent,
+    priceWithTax: 0,
+  };
+  const item = {
+    ...toSwipeItem(line),
+    item_custom_columns: [
+      { id: ITEM_COL_HOURS.id, name: ITEM_COL_HOURS.name, value: String(input.punch.hoursPerPlay) },
+      {
+        id: ITEM_COL_PLAYS.id,
+        name: ITEM_COL_PLAYS.name,
+        value: input.punch.totalPlays == null ? "" : String(input.punch.totalPlays),
+      },
+    ],
+  };
+
+  const initial = await getNextInvoiceSerial();
+  const res = await createDocWithRetry(initial, (docNo, serial) =>
+    buildInvoiceDoc({
+      docNumber: docNo,
+      serialNumber: serial,
+      items: [item],
+      totalAmount: 0,
+      taxAmount: 0,
+      netAmount: 0,
+      partyId,
+      notes: input.notes ?? "",
+      reference: "Play Panda membership visit",
+      documentCustomHeaders: [],
+    })
+  );
+  return { invoiceNumber: res.serial_number || initial.serialNumber };
 }
 
 // ── Session monitor ──────────────────────────────────────────────────────────
@@ -479,6 +589,8 @@ async function createSwipeInvoice(
 
 const PLAY_TIME_CATEGORY = "play time";
 const MEMBERSHIP_PUNCH_CATEGORY = "play time - memberships - punch";
+/** The membership PURCHASE category — the sale, not a visit. */
+const MEMBERSHIP_SALE_CATEGORY = "play time - memberships";
 
 /** The "Validation Code" document custom header, or null when absent (walk-in). */
 function readValidationCode(inv: Record<string, unknown>): string | null {
@@ -494,6 +606,8 @@ function readValidationCode(inv: Record<string, unknown>): string | null {
 
 interface SessionItem {
   name: string;
+  /** Swipe product id as a string — matches the `sku` convention in pricing.ts. */
+  sku: string;
   quantity: number;
   category: string;
   /** Line total after discounts, ₹. 0 can mean a zeroed edit-artifact line. */
@@ -515,6 +629,85 @@ interface SessionInvoice {
   companyName: string;
   partyCustomFields: { name: string; value: string }[];
   items: SessionItem[];
+}
+
+/**
+ * Locate one invoice by its human serial. The prefix is added when the caller
+ * passed a bare number, and the fuzzy search is filtered down to the exact
+ * match. Returns the raw row (doc_count, customer_id, amount_pending, …).
+ */
+async function findTransactionBySerial(
+  invoiceNumber: string
+): Promise<{ serial: string; row: Record<string, unknown> } | null> {
+  const prefix = await getInvoicePrefix();
+  const serial = invoiceNumber.startsWith(prefix) ? invoiceNumber : `${prefix}${invoiceNumber}`;
+
+  const txns = await swipeCall<SwipeResponse & { transactions?: Array<Record<string, unknown>> }>(
+    "v2/doc",
+    "get_transactions",
+    {
+      num_records: 20,
+      page: 0,
+      payment_status: 0,
+      search: serial,
+      search_type: "serial_no",
+      filters: { invoice_type: [], payment_mode: "", filtered_users: [], status: "", is_export: false, type_of_doc: [], prefixes: [] },
+      date: "",
+      document_type: "invoice",
+      sort_type: "",
+      sort_order: "",
+    }
+  );
+  const row = (txns.transactions ?? []).find((t) => t.serial_number === serial);
+  return row ? { serial, row } : null;
+}
+
+/** What's still owed on a transaction row, in ₹. */
+function pendingFromRow(row: Record<string, unknown>): number {
+  const paid = String(row.payment_status ?? "").toLowerCase() === "paid";
+  return Number(row.amount_pending ?? (paid ? 0 : (row.total_amount ?? 0)));
+}
+
+/** The one place a payment is written to Swipe — shared by both port methods. */
+async function createSwipePayment(p: {
+  serialNumber: string;
+  docCount: number;
+  partyId: number | null;
+  amount: number;
+  method: string;
+  transactionRef?: string;
+}): Promise<void> {
+  await swipeCall("v3/payments", "create_payment", {
+    payments: [
+      {
+        documents: [
+          {
+            serial_number: p.serialNumber,
+            amount_settled: p.amount,
+            doc_count: p.docCount,
+            document_type: "invoice",
+          },
+        ],
+        payment_date: swipeDateToday(),
+        notes: p.transactionRef ? `Ref ${p.transactionRef}` : "",
+        utr_id: p.transactionRef ?? "",
+        party_id: p.partyId,
+        party_type: "customer",
+        amount: p.amount,
+        payment_mode: p.method,
+        bank_id: DEFAULT_BANK_ID,
+        payment_type: "in",
+        tds_details: { apply_on: "net_amount", is_tds: 0 },
+        attachments: [],
+        signature: "",
+        send_sms: false,
+        send_email: false,
+        exclusive_notes: "",
+        is_edit: false,
+        project_id: -1,
+      },
+    ],
+  });
 }
 
 /** Raw get_transactions rows for today (paged) — totals + payments included. */
@@ -594,6 +787,7 @@ function normalizeSessionInvoice(
       const quantity = Number(item.quantity ?? item.qty ?? 0);
       return {
         name: String(item.name ?? item.product_name ?? ""),
+        sku: String(item.product_id ?? ""),
         quantity,
         category: String(item.category ?? item.product_category ?? ""),
         totalAmount:
@@ -787,28 +981,9 @@ export const swipeBilling: BillingProvider = {
   },
 
   async getBookingByInvoiceNumber(invoiceNumber: string): Promise<BookingDetails | null> {
-    const prefix = await getInvoicePrefix();
-    const serial = invoiceNumber.startsWith(prefix) ? invoiceNumber : `${prefix}${invoiceNumber}`;
-
-    // Find the invoice by exact serial (search is fuzzy → filter for the match).
-    const txns = await swipeCall<SwipeResponse & { transactions?: Array<Record<string, unknown>> }>(
-      "v2/doc",
-      "get_transactions",
-      {
-        num_records: 20,
-        page: 0,
-        payment_status: 0,
-        search: serial,
-        search_type: "serial_no",
-        filters: { invoice_type: [], payment_mode: "", filtered_users: [], status: "", is_export: false, type_of_doc: [], prefixes: [] },
-        date: "",
-        document_type: "invoice",
-        sort_type: "",
-        sort_order: "",
-      }
-    );
-    const match = (txns.transactions ?? []).find((t) => t.serial_number === serial);
-    if (!match?.new_hash_id) return null;
+    const found = await findTransactionBySerial(invoiceNumber);
+    if (!found?.row.new_hash_id) return null;
+    const { serial, row: match } = found;
 
     const d = await swipeCall<SwipeResponse & { invoice_details?: Record<string, unknown> }>(
       "v2/doc",
@@ -842,6 +1017,7 @@ export const swipeBilling: BillingProvider = {
       lines: items.map((it) => ({
         name: String(it.name ?? it.product_name ?? ""),
         quantity: Number(it.qty ?? it.quantity ?? 1),
+        amount: Number(it.total_amount ?? 0),
       })),
       playSessions,
     };
@@ -849,37 +1025,89 @@ export const swipeBilling: BillingProvider = {
 
   async recordPayment(input: RecordPaymentInput): Promise<void> {
     const { serialNumber, docCount, partyId } = JSON.parse(input.ref) as SwipeRef;
-    await swipeCall("v3/payments", "create_payment", {
-      payments: [
-        {
-          documents: [
-            {
-              serial_number: serialNumber,
-              amount_settled: input.amount,
-              doc_count: docCount,
-              document_type: "invoice",
-            },
-          ],
-          payment_date: swipeDateToday(),
-          notes: input.transactionRef ? `Ref ${input.transactionRef}` : "",
-          utr_id: input.transactionRef ?? "",
-          party_id: partyId,
-          party_type: "customer",
-          amount: input.amount,
-          payment_mode: input.method,
-          bank_id: DEFAULT_BANK_ID,
-          payment_type: "in",
-          tds_details: { apply_on: "net_amount", is_tds: 0 },
-          attachments: [],
-          signature: "",
-          send_sms: false,
-          send_email: false,
-          exclusive_notes: "",
-          is_edit: false,
-          project_id: -1,
-        },
-      ],
+    await createSwipePayment({
+      serialNumber,
+      docCount,
+      partyId,
+      amount: input.amount,
+      method: input.method,
+      transactionRef: input.transactionRef,
     });
+  },
+
+  async collectPayment(input: CollectPaymentInput): Promise<PaymentResult> {
+    const found = await findTransactionBySerial(input.invoiceNumber);
+    if (!found) throw new Error(`No invoice ${input.invoiceNumber} found`);
+    const { serial, row } = found;
+
+    const pending = pendingFromRow(row);
+    if (pending <= 0) {
+      throw new Error(`${serial} is already settled`);
+    }
+    // Guard the counter against fat-fingering more than is owed; Swipe would
+    // happily record it and leave a credit to unpick.
+    if (input.amount > pending + 0.5) {
+      throw new Error(
+        `Only ₹${pending.toLocaleString("en-IN")} is due on ${serial} — can't collect ₹${input.amount.toLocaleString("en-IN")}`
+      );
+    }
+
+    await createSwipePayment({
+      serialNumber: serial,
+      docCount: Number(row.doc_count ?? 0),
+      partyId: row.customer_id != null ? Number(row.customer_id) : null,
+      amount: input.amount,
+      method: input.method,
+      transactionRef: input.transactionRef,
+    });
+
+    // Re-read rather than subtracting locally, so the counter sees what Swipe
+    // actually believes (staff may have taken part of it there too).
+    const after = await findTransactionBySerial(serial);
+    const amountDue = after ? pendingFromRow(after.row) : Math.max(0, pending - input.amount);
+    return { invoiceNumber: serial, amountDue, paid: amountDue <= 0 };
+  },
+
+  async createMembershipPunch(input: MembershipPunchInput): Promise<{ invoiceNumber: string }> {
+    const partyId = await ensureCustomer(input.customer);
+    return createMembershipPunchInvoice(input, partyId);
+  },
+
+  async listTodayMembershipSales(): Promise<MembershipSaleInvoice[]> {
+    // The transaction rows carry the grand total; the line items (and so the
+    // plan products) only come from the per-invoice fetch.
+    const totals = new Map<string, number>();
+    for (const row of await listTodayTransactions()) {
+      const id = String(row.new_hash_id ?? "");
+      if (id) totals.set(id, Number(row.total_amount ?? 0));
+    }
+
+    const invoices = await Promise.all(
+      [...totals.keys()].map((id) =>
+        getSessionInvoice(id).catch((err) => {
+          console.error(`failed to load invoice ${id} for membership sales:`, err);
+          return null;
+        })
+      )
+    );
+
+    const sales: MembershipSaleInvoice[] = [];
+    for (const inv of invoices) {
+      if (!inv) continue;
+      const planLines = inv.items
+        .filter((i) => i.category.toLowerCase().trim() === MEMBERSHIP_SALE_CATEGORY)
+        .map((i) => ({ sku: i.sku, name: i.name, quantity: i.quantity }));
+      if (planLines.length === 0) continue;
+      sales.push({
+        invoiceNumber: inv.serialNumber,
+        customerName: inv.partyName,
+        phone: inv.phone,
+        amount: totals.get(inv.id) ?? 0,
+        at: inv.bookedAt,
+        planLines,
+      });
+    }
+    return sales.sort((a, b) => b.at - a.at);
   },
 
   async listTodaySessions(): Promise<TodaySession[]> {

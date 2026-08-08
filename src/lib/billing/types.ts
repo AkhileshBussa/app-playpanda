@@ -56,6 +56,72 @@ export interface RecordPaymentInput {
   transactionRef?: string;
 }
 
+/**
+ * One membership visit to punch as a ₹0 invoice. The punch product is what the
+ * counter already bills manually for membership visits; quantity = plays
+ * consumed (extra kids on one visit consume extra plays).
+ */
+export interface MembershipPunchInput {
+  customer: BookingCustomer;
+  punch: {
+    /** Generic punch product id; the adapter maps it to its own catalog. */
+    sku: string;
+    name: string;
+    taxRatePercent: number;
+    /** Plays consumed by this visit. */
+    quantity: number;
+    /** Per-play duration — drives the session timer on the ops monitor. */
+    hoursPerPlay: number;
+    /** The plan's total plays (informational on the invoice line); null = unlimited. */
+    totalPlays: number | null;
+  };
+  /** Free-text note for the counter (plan name, kids, etc.). */
+  notes?: string;
+}
+
+/** Payment methods the counter can collect in. */
+export const PAYMENT_METHODS = ["Cash", "Card", "UPI"] as const;
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+
+/**
+ * A payment taken at the counter, against an invoice the staff can see rather
+ * than the opaque booking `ref` (which only the booking flow holds).
+ */
+export interface CollectPaymentInput {
+  /** Human invoice number, e.g. "INV-1712". */
+  invoiceNumber: string;
+  /** Amount collected now, INR. May be part of the outstanding balance. */
+  amount: number;
+  method: PaymentMethod;
+  /** UPI/card reference, if the counter noted one. */
+  transactionRef?: string;
+}
+
+/** State of the invoice after a payment lands. */
+export interface PaymentResult {
+  invoiceNumber: string;
+  /** Still outstanding, INR — 0 once settled. */
+  amountDue: number;
+  paid: boolean;
+}
+
+/**
+ * A membership SALE invoice from today — what the manager billed at the
+ * counter before recording the membership. Offered as a pick-list so the sale
+ * reference is chosen, not typed.
+ */
+export interface MembershipSaleInvoice {
+  invoiceNumber: string;
+  customerName: string;
+  phone: string;
+  /** Invoice grand total, INR (may include socks etc., not just the plan). */
+  amount: number;
+  /** When the invoice was created, unix ms. */
+  at: number;
+  /** The membership-plan lines on this invoice. */
+  planLines: Array<{ sku: string; name: string; quantity: number }>;
+}
+
 /** Returning-customer details, for prefilling the booking form. */
 export interface CustomerProfile {
   name: string;
@@ -65,6 +131,8 @@ export interface CustomerProfile {
 export interface BookingLine {
   name: string;
   quantity: number;
+  /** Line total incl. tax, INR. */
+  amount: number;
 }
 
 /** A booking looked up by invoice number — the source of truth for the confirmation screen. */
@@ -149,6 +217,24 @@ export interface BillingProvider {
 
   /** Record a collected payment against the booking (marks the invoice paid). */
   recordPayment(input: RecordPaymentInput): Promise<void>;
+
+  /**
+   * Record a payment taken at the counter, addressed by invoice number.
+   * Rejects more than the outstanding balance. Returns what's left owing.
+   */
+  collectPayment(input: CollectPaymentInput): Promise<PaymentResult>;
+
+  /**
+   * Punch one membership visit: upsert the customer and create the ₹0 invoice
+   * with the punch product. Shows up on the ops monitor as a membership session.
+   */
+  createMembershipPunch(input: MembershipPunchInput): Promise<{ invoiceNumber: string }>;
+
+  /**
+   * Today's invoices carrying a membership-plan (sale) line, newest first —
+   * the pick-list for linking a membership to the sale it was billed on.
+   */
+  listTodayMembershipSales(): Promise<MembershipSaleInvoice[]>;
 
   /**
    * All play sessions from today's invoices, for the ops session monitor.
