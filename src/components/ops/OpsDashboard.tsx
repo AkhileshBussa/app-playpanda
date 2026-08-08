@@ -348,7 +348,9 @@ export default function OpsDashboard() {
               <SalesLine />
             </div>
           </div>
-          {/* Wristband key, up only during the weekend rush that uses it. Gated
+          {/* Wristband key, up only during the weekend rush that uses it — a
+              card that carries a band already names its own colour and out-by
+              time, so the key is for the rush and not for the whole day. Gated
               on `loading` too, so the server's clock never renders it. */}
           {!loading && isBandWindow(now) && <BandLegend />}
         </div>
@@ -510,20 +512,29 @@ function LeftRow({ session, onUndo }: { session: OpsSession; onUndo: () => void 
   );
 }
 
-/** Which band to stamp for each half hour — same every weekend, by design. */
+/**
+ * Which band to stamp for each half hour — same every weekend, by design.
+ *
+ * Each chip names its colour as well as showing it. The colour alone is the
+ * whole point on the floor, but at the counter someone is reaching into a box
+ * of bands and needs the word: two of these read as orange-ish under the play
+ * area lights, and a colour-blind manager gets nothing from the swatch at all.
+ *
+ * Wraps rather than scrolls. A reference with half its rows off the edge of a
+ * scroller is a reference nobody trusts, and this is only up on weekends.
+ */
 function BandLegend() {
   return (
-    <div className="mt-2 flex max-w-full items-center gap-1.5 overflow-x-auto pb-0.5">
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
       <span className="shrink-0 text-[11px] font-black uppercase tracking-wide text-ink/40">
-        Out by
+        Stamp / out by
       </span>
       {BAND_SLOTS.map((band) => (
         <span
           key={band.outBy}
-          title={`${band.label} band — out by ${band.outBy}`}
-          className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-black ${band.chip}`}
+          className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-black ${band.chip}`}
         >
-          {band.outByShort}
+          {band.label} <span className="font-bold opacity-70">{band.outByShort}</span>
         </span>
       ))}
     </div>
