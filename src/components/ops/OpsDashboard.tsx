@@ -407,7 +407,11 @@ export default function OpsDashboard() {
               </div>
             )}
             {leftRows.length > 0 && (
-              <div className={`space-y-1 ${cards.length > 0 ? "mt-4" : ""}`}>
+              // Capped rather than run to the container edge: these are one-line
+              // list items, and stretched across a wide board the name and the
+              // Undo end up a screen apart. The cap also keeps them clear of the
+              // floating add button in the bottom-right corner.
+              <div className={`max-w-3xl space-y-1 ${cards.length > 0 ? "mt-4" : ""}`}>
                 <p className="px-1 pb-0.5 text-xs font-black uppercase tracking-wide text-ink/30">
                   Left · {leftRows.length}
                 </p>
