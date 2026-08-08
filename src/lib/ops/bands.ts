@@ -96,8 +96,19 @@ export function bandForEnd(end: number | null): WristBand | null {
   const windowEnd = BAND_WINDOW_END_HOUR * 60;
   if (minutes < windowStart || minutes > windowEnd) return null;
 
-  // Round down to the half hour, and let a 9:00 PM finish share the last band
-  // rather than fall off the end of the table.
-  const slot = Math.min(Math.floor((minutes - windowStart) / SLOT_MINUTES), SLOT_COUNT - 1);
+  // The band is the first half-hour mark this session is out BY, so round the
+  // end time up to a mark and take the slot that carries it.
+  //
+  // Rounding down instead puts a session that ends exactly on a mark into the
+  // following band: a 4:30 finish came out as "out by 5:00 PM" printed directly
+  // above a timer reading 4:30, which is the card disagreeing with itself.
+  //
+  // The clamps cover the two ends: a finish exactly at 4:00 has no earlier mark
+  // to belong to, and one at 9:00 shares the last band rather than falling off
+  // the end of the table.
+  const slot = Math.min(
+    Math.max(Math.ceil((minutes - windowStart) / SLOT_MINUTES) - 1, 0),
+    SLOT_COUNT - 1
+  );
   return BAND_SLOTS[slot];
 }

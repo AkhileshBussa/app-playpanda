@@ -36,6 +36,11 @@ A session ending at 6:12 PM sits in the 6:00–6:30 half hour, so it gets the
 **purple** band and the card says "Out by 6:30 PM". The color is the sweep
 instruction; the countdown on the card is still the exact time.
 
+A session that ends exactly on a half-hour mark belongs to that mark, not the
+next one — a 6:30 PM finish is purple, "Out by 6:30 PM". The band answers "what
+is the first sweep this session must be gone by", so the end time rounds *up*
+to a mark.
+
 Cards keep their normal status colors underneath (purple border = waiting,
 green = running, yellow = last 10 minutes, coral = overdue, teal = member), so
 one card tells you both which band and how long is left.
