@@ -392,15 +392,21 @@ export default function OpsDashboard() {
         ) : (
           <div className="pb-24">
             {cards.length > 0 && (
-              // auto-FIT, not auto-fill: auto-fill keeps laying down empty
-              // 210px tracks to the edge of the container, so on a quiet
-              // afternoon three cards sat squeezed at their minimum with two
-              // thirds of the row blank beside them. auto-fit drops the empty
-              // tracks and the real cards take the space.
+              // Cards get their extra width from a bigger minimum, NOT from
+              // auto-fit. auto-fit collapses the empty tracks, so track width
+              // depends on how many sessions happen to exist — two sessions got
+              // half the board each, and capping the card then left the slack
+              // stranded inside the track as a gap between the two cards.
               //
-              // Capped at 420px per card (see OpsSessionCard) so one session
-              // doesn't produce a single 1200px slab.
-              <div className="grid grid-cols-[repeat(auto-fit,minmax(210px,1fr))] gap-2.5 max-[430px]:grid-cols-2">
+              // auto-fill keeps the tracks uniform whatever the count, so every
+              // card is the same width and the slack always collects at the end
+              // of the row. 280 rather than the old 210 is where the widening
+              // actually comes from: four ~300px cards to a row on the counter
+              // screen instead of five ~240px ones.
+              //
+              // (A max on the track — minmax(210px,420px) — does not work: the
+              // repeat count is computed from the max, so it yields two columns.)
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-2.5 max-[430px]:grid-cols-2">
                 {cards.map(({ session }) => (
                   <OpsSessionCard
                     key={session.id}
