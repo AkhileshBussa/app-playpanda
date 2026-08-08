@@ -17,13 +17,17 @@ function formatTime(ms: number): string {
   });
 }
 
+/** Minutes are zero-padded so the countdown keeps its width all the way down —
+ *  an unpadded 10:00 → 9:59 shortens the string and slides every digit left,
+ *  which reads as movement on a board someone is watching from the counter. */
 function formatCountdown(diffMs: number): string {
   const totalSec = Math.abs(Math.floor(diffMs / 1000));
   const hrs = Math.floor(totalSec / 3600);
   const mins = Math.floor((totalSec % 3600) / 60);
   const secs = totalSec % 60;
-  if (hrs > 0) return `${hrs}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
-  return `${mins}:${String(secs).padStart(2, "0")}`;
+  const mm = String(mins).padStart(2, "0");
+  const ss = String(secs).padStart(2, "0");
+  return hrs > 0 ? `${hrs}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
 interface OpsSessionCardProps {
@@ -70,14 +74,25 @@ export default function OpsSessionCard({
 
   // Palette-only theming per status (brand rule: no colors outside the palette).
   const theme = {
-    waiting: { card: "border-purple/50 bg-purple/10", timer: "text-purple" },
+    waiting: { card: "border-purple/50 bg-purple/10", timer: "text-purple", bar: "bg-purple" },
     active: membership
-      ? { card: "border-teal/50 bg-teal/10", timer: "text-teal" }
-      : { card: "border-green/50 bg-green/10", timer: "text-green" },
-    expiring: { card: "border-yellow bg-yellow/15", timer: "text-brown" },
-    expired: { card: "border-coral/60 bg-coral/10", timer: "text-coral" },
-    checked_out: { card: "border-ink/10 bg-white opacity-60", timer: "text-ink/40" },
+      ? { card: "border-teal/50 bg-teal/10", timer: "text-teal", bar: "bg-teal" }
+      : { card: "border-green/50 bg-green/10", timer: "text-green", bar: "bg-green" },
+    expiring: { card: "border-yellow bg-yellow/15", timer: "text-brown", bar: "bg-yellow" },
+    expired: { card: "border-coral/60 bg-coral/10", timer: "text-coral", bar: "bg-coral" },
+    checked_out: { card: "border-ink/10 bg-white opacity-60", timer: "text-ink/40", bar: "bg-ink/30" },
   }[status];
+
+  // How much of the booked time has been used, 0–1. Gives the countdown a shape
+  // you can read across the room, where four digits all look alike — a bar
+  // that's nearly full says "wrap up" before anyone has focused on the number.
+  // Null whenever there's no span to be a fraction of: waiting, untimed
+  // membership visits, and sessions that have already left.
+  const span = start != null && end != null ? end - start : 0;
+  const progress =
+    span > 0 && status !== "checked_out"
+      ? Math.min(Math.max((now - start!) / span, 0), 1)
+      : null;
 
   const kidNamesDisplay =
     session.kidNames.length > 0 ? session.kidNames.join(", ") : session.parentName || "—";
@@ -164,6 +179,17 @@ export default function OpsSessionCard({
                   ? "Member"
                   : `${end! - now <= 0 ? "-" : ""}${formatCountdown(end! - now)}`}
             </div>
+            {progress != null && (
+              <div
+                role="presentation"
+                className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-ink/10"
+              >
+                <div
+                  className={`h-full rounded-full transition-[width] duration-1000 ease-linear ${theme.bar}`}
+                  style={{ width: `${progress * 100}%` }}
+                />
+              </div>
+            )}
             {status !== "checked_out" && !untimed && start != null && (
               <div className="mt-0.5 text-sm font-bold text-ink/50">
                 {formatTime(start)} → {formatTime(end!)}
