@@ -97,12 +97,27 @@ export default function OpsSessionCard({
   const kidNamesDisplay =
     session.kidNames.length > 0 ? session.kidNames.join(", ") : session.parentName || "—";
 
+  // Manual membership visits have no invoice behind them, so there's nothing
+  // for them to open.
+  const showInvoice = onShowInvoice && !session.isManual ? () => onShowInvoice(session) : null;
+
+  // The card is the target, not just the name at the top of it: at counter
+  // speed nobody aims for a specific line, they tap the card they're looking
+  // at. The controls inside stop the click from reaching here, so tapping
+  // Check Out doesn't also throw an invoice sheet over the board.
+  const swallow = (e: React.MouseEvent) => e.stopPropagation();
+
   return (
-    // The grid stretches its tracks to fill the row, so the cap is here: past
-    // ~420px the card is mostly empty space and the timer drifts far enough
-    // from the name that they stop reading as one thing.
     <div
-      className={`flex w-full max-w-[420px] flex-col rounded-2xl border-2 p-3 transition-all duration-300 ${theme.card}`}
+      onClick={showInvoice ?? undefined}
+      title={showInvoice ? `See what's on ${session.invoiceNumber}` : undefined}
+      // The max-width only bites in the narrow single-column band between the
+      // phone breakpoint and ~750px, where one track would otherwise stretch a
+      // card the full width of the screen. Above that the grid's own tracks are
+      // always narrower than this, so it never strands slack inside a track.
+      className={`flex max-w-[460px] flex-col rounded-2xl border-2 p-3 transition-all duration-300 ${
+        showInvoice ? "cursor-pointer" : ""
+      } ${theme.card}`}
     >
       {/* Wristband: the color stamped on this session's bands, named out loud so
           it survives bad lighting and color blindness. */}
@@ -115,8 +130,9 @@ export default function OpsSessionCard({
         </div>
       )}
 
-      {/* Kid names | kid count — tapping opens what was billed on the invoice.
-          Manual membership visits have no invoice behind them, so they don't. */}
+      {/* Kid names | kid count. Still a real button when there's an invoice —
+          the whole card responds to a pointer, but a keyboard needs something
+          it can tab to and press. */}
       {(() => {
         const header = (
           <>
@@ -133,10 +149,13 @@ export default function OpsSessionCard({
             </div>
           </>
         );
-        return onShowInvoice && !session.isManual ? (
+        return showInvoice ? (
           <button
             type="button"
-            onClick={() => onShowInvoice(session)}
+            onClick={(e) => {
+              e.stopPropagation();
+              showInvoice();
+            }}
             title={`See what's on ${session.invoiceNumber}`}
             className="mb-1.5 flex w-full items-start gap-2 text-left"
           >
@@ -214,41 +233,48 @@ export default function OpsSessionCard({
           it's the same counter conversation as check-in. */}
       {onCollect && !session.isManual && session.amountDue > 0 && status !== "checked_out" && (
         <button
-          onClick={() => onCollect(session)}
+          onClick={(e) => {
+            e.stopPropagation();
+            onCollect(session);
+          }}
           className="mt-2 w-full rounded-full bg-green py-2 text-sm font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
         >
           Collect ₹{session.amountDue.toLocaleString("en-IN")}
         </button>
       )}
 
-      {/* Actions */}
-      {status === "waiting" ? (
-        <CheckInForm session={session} onCheckIn={onCheckIn} />
-      ) : status === "checked_out" ? (
-        <button
-          onClick={() => onCheckout(session, true)}
-          className="mt-2 w-full rounded-full border-2 border-transparent bg-ink/10 py-2 text-sm font-black text-ink/60 transition-colors hover:bg-ink/20"
-        >
-          Undo
-        </button>
-      ) : (
-        <>
-          {/* `active` is precisely "more than the expiring window left", so it
-              doubles as the test for a checkout that's probably a misclick. */}
-          <CheckoutButton
-            early={status === "active"}
-            onCheckout={() => onCheckout(session, false)}
-          />
-          {session.needsCheckIn && session.checkinAt != null && (
-            <button
-              onClick={() => onUndoCheckIn(session)}
-              className="mt-1.5 text-xs font-bold text-ink/40 underline-offset-2 hover:underline"
-            >
-              Undo check-in
-            </button>
-          )}
-        </>
-      )}
+      {/* Actions. Wrapped so nothing in here reaches the card's own click —
+          the code field in particular, which would otherwise open an invoice
+          sheet over the keyboard every time someone tapped it. */}
+      <div onClick={swallow} className="contents">
+        {status === "waiting" ? (
+          <CheckInForm session={session} onCheckIn={onCheckIn} />
+        ) : status === "checked_out" ? (
+          <button
+            onClick={() => onCheckout(session, true)}
+            className="mt-2 w-full rounded-full border-2 border-transparent bg-ink/10 py-2 text-sm font-black text-ink/60 transition-colors hover:bg-ink/20"
+          >
+            Undo
+          </button>
+        ) : (
+          <>
+            {/* `active` is precisely "more than the expiring window left", so it
+                doubles as the test for a checkout that's probably a misclick. */}
+            <CheckoutButton
+              early={status === "active"}
+              onCheckout={() => onCheckout(session, false)}
+            />
+            {session.needsCheckIn && session.checkinAt != null && (
+              <button
+                onClick={() => onUndoCheckIn(session)}
+                className="mt-1.5 text-xs font-bold text-ink/40 underline-offset-2 hover:underline"
+              >
+                Undo check-in
+              </button>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
