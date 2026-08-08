@@ -392,7 +392,15 @@ export default function OpsDashboard() {
         ) : (
           <div className="pb-24">
             {cards.length > 0 && (
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-2.5 max-[430px]:grid-cols-2">
+              // auto-FIT, not auto-fill: auto-fill keeps laying down empty
+              // 210px tracks to the edge of the container, so on a quiet
+              // afternoon three cards sat squeezed at their minimum with two
+              // thirds of the row blank beside them. auto-fit drops the empty
+              // tracks and the real cards take the space.
+              //
+              // Capped at 420px per card (see OpsSessionCard) so one session
+              // doesn't produce a single 1200px slab.
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(210px,1fr))] gap-2.5 max-[430px]:grid-cols-2">
                 {cards.map(({ session }) => (
                   <OpsSessionCard
                     key={session.id}

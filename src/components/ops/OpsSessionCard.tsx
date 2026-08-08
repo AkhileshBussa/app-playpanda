@@ -98,7 +98,12 @@ export default function OpsSessionCard({
     session.kidNames.length > 0 ? session.kidNames.join(", ") : session.parentName || "—";
 
   return (
-    <div className={`flex flex-col rounded-2xl border-2 p-3 transition-all duration-300 ${theme.card}`}>
+    // The grid stretches its tracks to fill the row, so the cap is here: past
+    // ~420px the card is mostly empty space and the timer drifts far enough
+    // from the name that they stop reading as one thing.
+    <div
+      className={`flex w-full max-w-[420px] flex-col rounded-2xl border-2 p-3 transition-all duration-300 ${theme.card}`}
+    >
       {/* Wristband: the color stamped on this session's bands, named out loud so
           it survives bad lighting and color blindness. */}
       {band && (
