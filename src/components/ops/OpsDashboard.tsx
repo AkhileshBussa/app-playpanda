@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
-import { computeOpsStatus, type OpsSession, type OpsStatus } from "@/lib/ops/types";
+import { computeOpsStatus, opsEndTime, type OpsSession, type OpsStatus } from "@/lib/ops/types";
 import { BAND_SLOTS, isBandWindow } from "@/lib/ops/bands";
 import { getManualVisits, manualToOpsSession, type ManualVisit } from "@/lib/ops/manual";
 import OpsSessionCard from "./OpsSessionCard";
@@ -32,6 +32,13 @@ const RUSH_DAYS = [0, 6];
 const RUSH_FROM_HOUR = 17;
 const RUSH_TO_HOUR = 21;
 const RUSH_POLL_MS = 5_000;
+
+/** Ms until this session's time is up; null when no clock is running — untimed
+ *  membership visits, and bookings still waiting to check in. */
+function remainingMs(s: OpsSession, now: number): number | null {
+  const end = opsEndTime(s);
+  return end == null ? null : end - now;
+}
 
 function pollDelay(at = new Date()): number {
   const inRush =
@@ -215,14 +222,27 @@ export default function OpsDashboard() {
 
   const withStatus = allSessions.map((s) => ({ session: s, status: computeOpsStatus(s, now) }));
 
+  // Most urgent first: the card that needs someone to walk over to it is the
+  // card your eye lands on. Waiting sits after the running timers — nobody is
+  // in the building on that booking yet, so it can't be close to expiry.
   const order: Record<OpsStatus, number> = {
-    waiting: 0,
-    active: 1,
-    expiring: 2,
-    expired: 3,
+    expired: 0,
+    expiring: 1,
+    active: 2,
+    waiting: 3,
     checked_out: 4,
   };
-  const sorted = [...withStatus].sort((a, b) => order[a.status] - order[b.status]);
+  const sorted = [...withStatus].sort((a, b) => {
+    const byStatus = order[a.status] - order[b.status];
+    if (byStatus !== 0) return byStatus;
+    const ra = remainingMs(a.session, now);
+    const rb = remainingMs(b.session, now);
+    // Untimed membership visits have no expiry to be near, so they trail the
+    // timed cards in their group rather than jumping the queue.
+    if (ra == null) return rb == null ? 0 : 1;
+    if (rb == null) return -1;
+    return ra - rb;
+  });
   const filtered = filter === "all" ? sorted : sorted.filter((s) => s.status === filter);
 
   const counts = withStatus.reduce(
