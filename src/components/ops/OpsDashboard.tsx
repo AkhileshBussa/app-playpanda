@@ -245,6 +245,14 @@ export default function OpsDashboard() {
   });
   const filtered = filter === "all" ? sorted : sorted.filter((s) => s.status === filter);
 
+  // On the combined board a session that's left is history — it can't need
+  // anything, so it doesn't get card-sized real estate next to sessions that
+  // do. It collapses to a line, below everything live, still one tap from Undo.
+  // The Left tab is where you go to actually look at them, so cards stay there.
+  const collapseLeft = filter === "all";
+  const cards = collapseLeft ? filtered.filter((s) => s.status !== "checked_out") : filtered;
+  const leftRows = collapseLeft ? filtered.filter((s) => s.status === "checked_out") : [];
+
   const counts = withStatus.reduce(
     (acc, s) => {
       acc[s.status]++;
@@ -346,18 +354,36 @@ export default function OpsDashboard() {
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-2.5 pb-24 max-[430px]:grid-cols-2">
-            {filtered.map(({ session }) => (
-              <OpsSessionCard
-                key={session.id}
-                session={session}
-                onCheckIn={handleCheckIn}
-                onUndoCheckIn={handleUndoCheckIn}
-                onCheckout={handleCheckout}
-                onShowInvoice={setInvoiceFor}
-                onCollect={setCollectFor}
-              />
-            ))}
+          <div className="pb-24">
+            {cards.length > 0 && (
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-2.5 max-[430px]:grid-cols-2">
+                {cards.map(({ session }) => (
+                  <OpsSessionCard
+                    key={session.id}
+                    session={session}
+                    onCheckIn={handleCheckIn}
+                    onUndoCheckIn={handleUndoCheckIn}
+                    onCheckout={handleCheckout}
+                    onShowInvoice={setInvoiceFor}
+                    onCollect={setCollectFor}
+                  />
+                ))}
+              </div>
+            )}
+            {leftRows.length > 0 && (
+              <div className={`space-y-1 ${cards.length > 0 ? "mt-4" : ""}`}>
+                <p className="px-1 pb-0.5 text-xs font-black uppercase tracking-wide text-ink/30">
+                  Left · {leftRows.length}
+                </p>
+                {leftRows.map(({ session }) => (
+                  <LeftRow
+                    key={session.id}
+                    session={session}
+                    onUndo={() => handleCheckout(session, true)}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -396,6 +422,36 @@ export default function OpsDashboard() {
         onClose={() => setShowAddForm(false)}
         onAdded={() => setManualVisits(getManualVisits())}
       />
+    </div>
+  );
+}
+
+/**
+ * A session that's already left, on the combined board: one line, grey, with
+ * the Undo that's the only thing anyone still needs from it.
+ *
+ * Same fields the card leads with (who, how many, state, action) so it reads as
+ * a compressed card rather than a different kind of object.
+ */
+function LeftRow({ session, onUndo }: { session: OpsSession; onUndo: () => void }) {
+  const name =
+    session.kidNames.length > 0 ? session.kidNames.join(", ") : session.parentName || "—";
+
+  return (
+    <div className="flex items-center gap-2.5 rounded-xl border-2 border-ink/10 bg-white px-3 py-1.5">
+      <span className="min-w-0 flex-1 truncate text-sm font-black text-ink/45">{name}</span>
+      <span className="shrink-0 text-sm font-bold text-ink/35">
+        {session.kidCount} {session.kidCount === 1 ? "kid" : "kids"}
+      </span>
+      <span className="shrink-0 rounded-full bg-ink/10 px-2 py-0.5 text-[11px] font-black uppercase tracking-wide text-ink/45">
+        Left
+      </span>
+      <button
+        onClick={onUndo}
+        className="shrink-0 text-xs font-black text-ink/45 underline-offset-2 hover:text-ink hover:underline"
+      >
+        Undo
+      </button>
     </div>
   );
 }
