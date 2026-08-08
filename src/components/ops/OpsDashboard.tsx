@@ -324,9 +324,10 @@ export default function OpsDashboard() {
         <div className="mx-auto w-full max-w-[1600px] px-4 py-2.5 lg:px-6">
           {/* The nav already names the tool; keep the heading for screen readers. */}
           <h1 className="sr-only">Session Monitor</h1>
-          {/* Counts and takings are both one-line summaries, so they share a row
-              and the header costs one band instead of three. */}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          {/* Session state on the left, takings pushed to the far right. They
+              share a row to keep the header one band, but they're read by
+              different people for different reasons, so they don't interleave. */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
             <div className="flex flex-wrap items-center gap-2">
               {filters.map((f) => (
                 <button
@@ -344,7 +345,9 @@ export default function OpsDashboard() {
                 {kidsInside} <span className="font-bold opacity-60">inside</span>
               </span>
             </div>
-            <SalesLine />
+            <div className="ml-auto">
+              <SalesLine />
+            </div>
           </div>
           {/* Wristband key, up only during the weekend rush that uses it. Gated
               on `loading` too, so the server's clock never renders it. */}

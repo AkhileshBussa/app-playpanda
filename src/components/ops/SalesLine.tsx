@@ -12,10 +12,14 @@ const inr = new Intl.NumberFormat("en-IN", {
 /**
  * Today's takings in the ops header — self-refreshing, silent on errors.
  *
- * The total is the headline; the payment split is data, so it's set as pills
- * rather than prose, matching the count pills it sits beside. A mode that took
- * nothing isn't drawn: "Cash ₹0 · Card ₹0" is three quarters of the line on a
- * card-free day and says nothing the total doesn't.
+ * Set deliberately quiet. This is owner reporting sharing a row with the floor
+ * state, and the person working the counter has to read session status past it
+ * all evening; they should never have to parse revenue to do that. So the total
+ * is the only thing with any weight, the split is small grey text after it, and
+ * the caller right-aligns the whole block away from the pills.
+ *
+ * A mode that took nothing isn't drawn: "Cash ₹0 · Card ₹0" is three quarters
+ * of the line on a card-free day and says nothing the total doesn't.
  */
 export default function SalesLine() {
   const [sales, setSales] = useState<DaySales | null>(null);
@@ -42,21 +46,23 @@ export default function SalesLine() {
     { label: "Other", amount: sales.other },
   ].filter((m) => m.amount > 0);
 
+  const detail = [
+    `${sales.invoiceCount} bill${sales.invoiceCount === 1 ? "" : "s"}`,
+    ...modes.map((m) => `${m.label} ${inr.format(m.amount)}`),
+  ];
+
   return (
-    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
-      <span className="whitespace-nowrap text-base font-black text-ink">
+    <div className="flex flex-wrap items-baseline justify-end gap-x-1.5 gap-y-0.5">
+      <span className="whitespace-nowrap text-sm font-black text-ink/70">
         {inr.format(sales.total)}
-        <span className="font-bold text-ink/50"> today</span>
+        <span className="font-bold text-ink/40"> today</span>
       </span>
-      <span className="whitespace-nowrap text-sm font-bold text-ink/50">
-        {sales.invoiceCount} bill{sales.invoiceCount === 1 ? "" : "s"}
-      </span>
-      {modes.map((m) => (
-        <span
-          key={m.label}
-          className="whitespace-nowrap rounded-full bg-ink/5 px-2.5 py-0.5 text-sm font-bold text-ink/60"
-        >
-          {m.label} <span className="font-black text-ink/80">{inr.format(m.amount)}</span>
+      {detail.map((part) => (
+        <span key={part} className="whitespace-nowrap text-xs font-bold text-ink/40">
+          <span aria-hidden className="mr-1.5 text-ink/20">
+            ·
+          </span>
+          {part}
         </span>
       ))}
     </div>
