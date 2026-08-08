@@ -6,7 +6,6 @@ import { computeOpsStatus, opsEndTime, type OpsSession, type OpsStatus } from "@
 import { BAND_SLOTS, isBandWindow } from "@/lib/ops/bands";
 import { getManualVisits, manualToOpsSession, type ManualVisit } from "@/lib/ops/manual";
 import OpsSessionCard from "./OpsSessionCard";
-import AttendanceAlert from "./AttendanceAlert";
 import AddVisit from "./AddVisit";
 import InvoiceItemsSheet from "./InvoiceItemsSheet";
 import CollectPaymentSheet from "./CollectPaymentSheet";
@@ -356,8 +355,6 @@ export default function OpsDashboard() {
       </header>
 
       <div className="mx-auto w-full max-w-[1600px] px-4 py-3 lg:px-6">
-        <AttendanceAlert />
-
         {/* Content */}
         {loading ? (
           <div className="py-20 text-center">

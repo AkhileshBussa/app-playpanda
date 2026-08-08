@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useAttendanceAlert } from "./useAttendanceAlert";
 
 /**
  * Shared staff-tools header — the one place every ops tool is reachable from.
@@ -66,6 +67,10 @@ export default function OpsNav() {
   const pathname = usePathname();
   const [openKey, setOpenKey] = useState<string | null>(null);
   const navRef = useRef<HTMLElement>(null);
+  // Staff who haven't clocked in. Surfaced here as a dot on Operations rather
+  // than as a banner on whatever page you're on: it's an HR fact about the day,
+  // and it shouldn't interrupt the screen someone opened to do something else.
+  const missingAttendance = useAttendanceAlert();
 
   // Navigating is the end of the interaction — never leave a menu hanging open
   // over the page the user just asked for.
@@ -123,6 +128,7 @@ export default function OpsNav() {
         {GROUPS.map((group) => {
           const active = group.items.some((t) => isActive(pathname, t));
           const open = openKey === group.key;
+          const alerts = group.key === "operations" ? missingAttendance : [];
           return (
             <div key={group.key} className="relative">
               <button
@@ -130,7 +136,7 @@ export default function OpsNav() {
                 aria-haspopup="menu"
                 aria-expanded={open}
                 onClick={() => setOpenKey(open ? null : group.key)}
-                className={`flex h-10 items-center gap-1.5 rounded-full px-3.5 text-sm font-black transition-colors sm:px-4 ${
+                className={`relative flex h-10 items-center gap-1.5 rounded-full px-3.5 text-sm font-black transition-colors sm:px-4 ${
                   active
                     ? "bg-ink text-cream"
                     : open
@@ -146,6 +152,17 @@ export default function OpsNav() {
                 >
                   ▼
                 </span>
+                {alerts.length > 0 && (
+                  <>
+                    <span
+                      aria-hidden
+                      className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-coral ring-2 ring-cream"
+                    />
+                    <span className="sr-only">
+                      — {alerts.length} needing attention
+                    </span>
+                  </>
+                )}
               </button>
 
               {open && (
@@ -170,6 +187,25 @@ export default function OpsNav() {
                     <p className="px-2 pb-2 text-xs font-black uppercase tracking-wide text-ink/40 sm:hidden">
                       {group.label}
                     </p>
+                    {/* What the dot means, spelled out — the dot gets you to
+                        open the menu, this tells you whether it's worth acting
+                        on and takes you straight there. */}
+                    {alerts.length > 0 && (
+                      <Link
+                        href="/ops/attendance"
+                        role="menuitem"
+                        className="mb-1.5 block rounded-2xl border-2 border-coral/30 bg-coral/10 px-3 py-2 sm:rounded-xl"
+                      >
+                        <p className="text-sm font-black text-coral">
+                          {alerts.length}{" "}
+                          {alerts.length === 1 ? "person hasn't" : "people haven't"} marked
+                          attendance today
+                        </p>
+                        <p className="mt-0.5 text-xs font-bold text-ink/50">
+                          {alerts.map((a) => a.name).join(", ")}
+                        </p>
+                      </Link>
+                    )}
                     {group.items.map((tool) => {
                       const on = isActive(pathname, tool);
                       return (
