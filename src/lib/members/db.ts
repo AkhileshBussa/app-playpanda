@@ -9,37 +9,17 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { Pool, type PoolClient } from "pg";
+import { type PoolClient } from "pg";
+import { dbConfigured, getPool, onceSchema } from "../pg";
 import type { Membership, MembershipVisit } from "./types";
 
-let pool: Pool | null = null;
-
-function getPool(): Pool {
-  if (!pool) {
-    const url = process.env.DATABASE_URL;
-    if (!url) throw new Error("Postgres not configured — set DATABASE_URL");
-    pool = new Pool({
-      connectionString: url,
-      max: 3,
-      // Neon (and other hosted Postgres) require TLS; local dev doesn't run it.
-      ssl: /localhost|127\.0\.0\.1/.test(url) ? undefined : { rejectUnauthorized: true },
-    });
-  }
-  return pool;
-}
-
 export function membersDbConfigured(): boolean {
-  return Boolean(process.env.DATABASE_URL);
+  return dbConfigured();
 }
 
 // Schema is tiny and idempotent — ensure it once per process instead of
 // requiring a migration step beyond installing the database.
-let schemaReady: Promise<void> | null = null;
-
-function ensureSchema(): Promise<void> {
-  if (!schemaReady) {
-    schemaReady = (async () => {
-      await getPool().query(`
+const ensureSchema = onceSchema(`
         CREATE TABLE IF NOT EXISTS memberships (
           id TEXT PRIMARY KEY,
           phone TEXT NOT NULL,
@@ -87,14 +67,7 @@ function ensureSchema(): Promise<void> {
         ALTER TABLE membership_visits
           ADD COLUMN IF NOT EXISTS deleted_at BIGINT,
           ADD COLUMN IF NOT EXISTS deleted_reason TEXT NOT NULL DEFAULT '';
-      `);
-    })().catch((err) => {
-      schemaReady = null; // let the next call retry
-      throw err;
-    });
-  }
-  return schemaReady;
-}
+`);
 
 // ── Row mapping ──────────────────────────────────────────────────────────────
 

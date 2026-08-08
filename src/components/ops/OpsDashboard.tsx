@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { computeOpsStatus, type OpsSession, type OpsStatus } from "@/lib/ops/types";
+import { BAND_SLOTS, isBandWindow } from "@/lib/ops/bands";
 import { getManualVisits, manualToOpsSession, type ManualVisit } from "@/lib/ops/manual";
 import OpsSessionCard from "./OpsSessionCard";
+import AttendanceAlert from "./AttendanceAlert";
 import AddVisit from "./AddVisit";
 import InvoiceItemsSheet from "./InvoiceItemsSheet";
 import CollectPaymentSheet from "./CollectPaymentSheet";
@@ -16,6 +18,28 @@ type Filter = "all" | OpsStatus;
 type Override = { checkinAt?: number | null; checkoutAt?: number | null };
 
 const POLL_MS = 30_000;
+
+/**
+ * The weekend evening rush is the one stretch where two tablets are checking
+ * people in at once, so a 30s-stale board actively misleads the counter. The
+ * poll tightens to 5s then and drops straight back afterwards.
+ *
+ * Deliberately narrow: one poll costs a Swipe call per invoice raised today, so
+ * this cadence would be far too expensive to run all day. Weekend days as
+ * `Date#getDay` numbers them, on the tablet's own clock (IST).
+ */
+const RUSH_DAYS = [0, 6];
+const RUSH_FROM_HOUR = 17;
+const RUSH_TO_HOUR = 21;
+const RUSH_POLL_MS = 5_000;
+
+function pollDelay(at = new Date()): number {
+  const inRush =
+    RUSH_DAYS.includes(at.getDay()) &&
+    at.getHours() >= RUSH_FROM_HOUR &&
+    at.getHours() < RUSH_TO_HOUR;
+  return inRush ? RUSH_POLL_MS : POLL_MS;
+}
 
 export default function OpsDashboard() {
   const [apiSessions, setApiSessions] = useState<OpsSession[]>([]);
@@ -66,13 +90,38 @@ export default function OpsDashboard() {
   useEffect(() => {
     setManualVisits(getManualVisits());
     fetchSessions();
-    const poll = setInterval(fetchSessions, POLL_MS);
+
+    // Self-scheduling instead of setInterval, for two reasons that both matter
+    // at 5s: the delay is re-decided every cycle, so a board left open on a
+    // Saturday speeds up at 5pm and slows down at 9pm on its own; and the next
+    // poll is only queued once the previous one lands, so a slow Swipe can't
+    // leave requests stacking up behind each other.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+    const schedule = () => {
+      if (stopped) return;
+      timer = setTimeout(async () => {
+        // A monitor left open on a background tab shouldn't keep hitting Swipe.
+        if (!document.hidden) await fetchSessions();
+        schedule();
+      }, pollDelay());
+    };
+    schedule();
+
+    // …but catch up the moment it's looked at again.
+    const onVisibility = () => {
+      if (!document.hidden) fetchSessions();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
     // Coarse re-render tick so filters/counts track status flips between polls
     // (each card runs its own 1s countdown).
     const tick = setInterval(() => setNow(Date.now()), 10_000);
     return () => {
-      clearInterval(poll);
+      stopped = true;
+      clearTimeout(timer);
       clearInterval(tick);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [fetchSessions]);
 
@@ -201,25 +250,32 @@ export default function OpsDashboard() {
     <div className="min-h-dvh">
       {/* Header */}
       <header className="sticky top-0 z-10 border-b-2 border-ink/5 bg-cream/95 backdrop-blur">
-        <div className="flex flex-col items-center px-4 py-3">
+        <div className="mx-auto w-full max-w-[1600px] px-4 py-2.5 lg:px-6">
           {/* The nav already names the tool; keep the heading for screen readers. */}
           <h1 className="sr-only">Session Monitor</h1>
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <StatBadge label="Waiting" count={counts.waiting} className="bg-purple/15 text-purple" />
-            <StatBadge label="Active" count={counts.active} className="bg-green/15 text-green" />
-            <StatBadge label="Expiring" count={counts.expiring} className="bg-yellow/25 text-brown" />
-            <StatBadge label="Expired" count={counts.expired} className="bg-coral/15 text-coral" />
-            <span className="whitespace-nowrap rounded-full bg-ink px-3.5 py-1 text-sm font-black text-cream">
-              {kidsInside} <span className="font-bold opacity-70">inside</span>
-            </span>
-          </div>
-          <div className="mt-2">
+          {/* Counts and takings are both one-line summaries, so they share a row
+              and the header costs one band instead of three. */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <StatBadge label="Waiting" count={counts.waiting} className="bg-purple/15 text-purple" />
+              <StatBadge label="Active" count={counts.active} className="bg-green/15 text-green" />
+              <StatBadge label="Expiring" count={counts.expiring} className="bg-yellow/25 text-brown" />
+              <StatBadge label="Expired" count={counts.expired} className="bg-coral/15 text-coral" />
+              <span className="whitespace-nowrap rounded-full bg-ink px-3.5 py-1 text-sm font-black text-cream">
+                {kidsInside} <span className="font-bold opacity-70">inside</span>
+              </span>
+            </div>
             <SalesLine />
           </div>
+          {/* Wristband key, up only during the weekend rush that uses it. Gated
+              on `loading` too, so the server's clock never renders it. */}
+          {!loading && isBandWindow(now) && <BandLegend />}
         </div>
       </header>
 
-      <div className="px-3 py-3">
+      <div className="mx-auto w-full max-w-[1600px] px-4 py-3 lg:px-6">
+        <AttendanceAlert />
+
         {/* Filter tabs */}
         <div className="mb-3 flex gap-1.5 overflow-x-auto pb-1">
           {filters.map((f) => (
@@ -270,7 +326,7 @@ export default function OpsDashboard() {
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-2 pb-24 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-2.5 pb-24 max-[430px]:grid-cols-2">
             {filtered.map(({ session }) => (
               <OpsSessionCard
                 key={session.id}
@@ -320,6 +376,26 @@ export default function OpsDashboard() {
         onClose={() => setShowAddForm(false)}
         onAdded={() => setManualVisits(getManualVisits())}
       />
+    </div>
+  );
+}
+
+/** Which band to stamp for each half hour — same every weekend, by design. */
+function BandLegend() {
+  return (
+    <div className="mt-2 flex max-w-full items-center gap-1.5 overflow-x-auto pb-0.5">
+      <span className="shrink-0 text-[11px] font-black uppercase tracking-wide text-ink/40">
+        Out by
+      </span>
+      {BAND_SLOTS.map((band) => (
+        <span
+          key={band.outBy}
+          title={`${band.label} band — out by ${band.outBy}`}
+          className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-black ${band.chip}`}
+        >
+          {band.outByShort}
+        </span>
+      ))}
     </div>
   );
 }

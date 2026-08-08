@@ -7,6 +7,7 @@ import {
   opsStartTime,
   type OpsSession,
 } from "@/lib/ops/types";
+import { bandForEnd } from "@/lib/ops/bands";
 
 function formatTime(ms: number): string {
   return new Date(ms).toLocaleTimeString("en-IN", {
@@ -62,6 +63,11 @@ export default function OpsSessionCard({
   // the palette's membership color, whether the punch visit is timed or not.
   const membership = session.isMembership || untimed;
 
+  // Wristband color for the weekend rush — the status colors below stay as they
+  // are, so a card still says both "which band" and "how long left". Nothing to
+  // sweep for once they've left.
+  const band = status === "checked_out" ? null : bandForEnd(end);
+
   // Palette-only theming per status (brand rule: no colors outside the palette).
   const theme = {
     waiting: { card: "border-purple/50 bg-purple/10", timer: "text-purple" },
@@ -78,6 +84,17 @@ export default function OpsSessionCard({
 
   return (
     <div className={`flex flex-col rounded-2xl border-2 p-3 transition-all duration-300 ${theme.card}`}>
+      {/* Wristband: the color stamped on this session's bands, named out loud so
+          it survives bad lighting and color blindness. */}
+      {band && (
+        <div
+          className={`-mx-3 -mt-3 mb-2 rounded-t-xl px-2 py-1 text-center ${band.chip}`}
+        >
+          <div className="text-sm font-black uppercase tracking-wide">{band.label} band</div>
+          <div className="text-[11px] font-bold opacity-75">Out by {band.outBy}</div>
+        </div>
+      )}
+
       {/* Kid names | kid count — tapping opens what was billed on the invoice.
           Manual membership visits have no invoice behind them, so they don't. */}
       {(() => {

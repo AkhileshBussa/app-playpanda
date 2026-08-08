@@ -9,7 +9,14 @@ const inr = new Intl.NumberFormat("en-IN", {
   maximumFractionDigits: 0,
 });
 
-/** Today's sales in the ops header — self-refreshing, silent on errors. */
+/**
+ * Today's takings in the ops header — self-refreshing, silent on errors.
+ *
+ * The total is the headline; the payment split is data, so it's set as pills
+ * rather than prose, matching the count pills it sits beside. A mode that took
+ * nothing isn't drawn: "Cash ₹0 · Card ₹0" is three quarters of the line on a
+ * card-free day and says nothing the total doesn't.
+ */
 export default function SalesLine() {
   const [sales, setSales] = useState<DaySales | null>(null);
 
@@ -28,19 +35,30 @@ export default function SalesLine() {
 
   if (!sales) return null;
 
+  const modes = [
+    { label: "Cash", amount: sales.cash },
+    { label: "Card", amount: sales.card },
+    { label: "UPI", amount: sales.upi },
+    { label: "Other", amount: sales.other },
+  ].filter((m) => m.amount > 0);
+
   return (
-    <div className="flex flex-wrap items-baseline justify-center gap-x-2 text-sm font-bold text-ink/50">
-      <span className="text-base font-black text-ink">
+    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+      <span className="whitespace-nowrap text-base font-black text-ink">
         {inr.format(sales.total)}
         <span className="font-bold text-ink/50"> today</span>
       </span>
-      <span>
+      <span className="whitespace-nowrap text-sm font-bold text-ink/50">
         {sales.invoiceCount} bill{sales.invoiceCount === 1 ? "" : "s"}
       </span>
-      <span>· Cash {inr.format(sales.cash)}</span>
-      <span>· Card {inr.format(sales.card)}</span>
-      <span>· UPI {inr.format(sales.upi)}</span>
-      {sales.other > 0 && <span>· Other {inr.format(sales.other)}</span>}
+      {modes.map((m) => (
+        <span
+          key={m.label}
+          className="whitespace-nowrap rounded-full bg-ink/5 px-2.5 py-0.5 text-sm font-bold text-ink/60"
+        >
+          {m.label} <span className="font-black text-ink/80">{inr.format(m.amount)}</span>
+        </span>
+      ))}
     </div>
   );
 }

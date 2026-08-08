@@ -128,6 +128,19 @@ async function swipeCall<T extends SwipeResponse>(
   return body;
 }
 
+/**
+ * Same transport, for Swipe features that aren't billing (expenses live in
+ * ../staff/expenses). Exported so those share this file's token handling and
+ * error shape rather than re-implementing auth against the same account.
+ */
+export async function swipeRequest<T extends object>(
+  prefix: string,
+  action: string,
+  payload: Record<string, unknown>
+): Promise<T> {
+  return swipeCall<T & SwipeResponse>(prefix, action, payload);
+}
+
 /** Today's date in IST, DD-MM-YYYY — the format Swipe expects. */
 function swipeDateToday(): string {
   const parts = new Intl.DateTimeFormat("en-GB", {
