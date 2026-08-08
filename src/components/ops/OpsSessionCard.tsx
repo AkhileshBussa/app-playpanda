@@ -193,19 +193,22 @@ export default function OpsSessionCard({
       {/* Actions */}
       {status === "waiting" ? (
         <CheckInForm session={session} onCheckIn={onCheckIn} />
+      ) : status === "checked_out" ? (
+        <button
+          onClick={() => onCheckout(session, true)}
+          className="mt-2 w-full rounded-full border-2 border-transparent bg-ink/10 py-2 text-sm font-black text-ink/60 transition-colors hover:bg-ink/20"
+        >
+          Undo
+        </button>
       ) : (
         <>
-          <button
-            onClick={() => onCheckout(session, status === "checked_out")}
-            className={`mt-2 w-full rounded-full py-2 text-sm font-black transition-colors ${
-              status === "checked_out"
-                ? "bg-ink/10 text-ink/60 hover:bg-ink/20"
-                : "bg-ink text-cream hover:bg-ink/80"
-            }`}
-          >
-            {status === "checked_out" ? "Undo" : "Check Out"}
-          </button>
-          {status !== "checked_out" && session.needsCheckIn && session.checkinAt != null && (
+          {/* `active` is precisely "more than the expiring window left", so it
+              doubles as the test for a checkout that's probably a misclick. */}
+          <CheckoutButton
+            early={status === "active"}
+            onCheckout={() => onCheckout(session, false)}
+          />
+          {session.needsCheckIn && session.checkinAt != null && (
             <button
               onClick={() => onUndoCheckIn(session)}
               className="mt-1.5 text-xs font-bold text-ink/40 underline-offset-2 hover:underline"
@@ -216,6 +219,55 @@ export default function OpsSessionCard({
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Check Out, weighted by how likely the tap is to be the one intended.
+ *
+ * Ending a session that still has real time on it is almost never deliberate —
+ * it's a thumb landing on the wrong card in a grid of near-identical ones. So
+ * those get the quiet outline treatment and cost a second tap. Once a session
+ * is expiring or expired, checking out is the expected next thing to do, so the
+ * button is filled and fires immediately.
+ *
+ * The confirm is a second tap on the same button rather than a sheet: the hand
+ * is already there, and a modal over a board that's being read by two people is
+ * a worse interruption than the misclick it prevents.
+ */
+function CheckoutButton({ early, onCheckout }: { early: boolean; onCheckout: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+
+  // Disarm on its own. A card left sitting in "Tap to confirm" is a trap for
+  // whoever picks the tablet up next and taps what looks like Check Out.
+  useEffect(() => {
+    if (!confirming) return;
+    const t = setTimeout(() => setConfirming(false), 3000);
+    return () => clearTimeout(t);
+  }, [confirming]);
+
+  const base =
+    "mt-2 w-full rounded-full border-2 py-2 text-sm font-black transition-colors";
+
+  if (!early) {
+    return (
+      <button onClick={onCheckout} className={`${base} border-ink bg-ink text-cream hover:bg-ink/80`}>
+        Check Out
+      </button>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => (confirming ? onCheckout() : setConfirming(true))}
+      className={`${base} ${
+        confirming
+          ? "border-ink bg-ink text-cream"
+          : "border-ink/20 text-ink/50 hover:border-ink/40 hover:bg-ink/5"
+      }`}
+    >
+      {confirming ? "Tap to confirm" : "Check Out"}
+    </button>
   );
 }
 
