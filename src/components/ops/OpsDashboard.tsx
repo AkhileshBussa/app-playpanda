@@ -265,13 +265,56 @@ export default function OpsDashboard() {
     .filter((s) => s.status !== "waiting" && s.status !== "checked_out")
     .reduce((n, s) => n + s.session.kidCount, 0);
 
-  const filters: { key: Filter; label: string }[] = [
-    { key: "all", label: "All" },
-    { key: "waiting", label: "Waiting" },
-    { key: "active", label: "Active" },
-    { key: "expiring", label: "Expiring" },
-    { key: "expired", label: "Expired" },
-    { key: "checked_out", label: "Left" },
+  // One row, not two: the counts and the filters were always the same list of
+  // states, so the pill that tells you there are 3 expiring is the pill that
+  // shows you which 3. Lifecycle order, not the urgency order the cards use —
+  // these are a fixed taxonomy and shouldn't move around under the finger.
+  //
+  // Selected reads as the status colour filled in, unselected as the same
+  // colour tinted, so choosing a filter never costs the colour semantics.
+  const filters: { key: Filter; label: string; count: number; on: string; off: string }[] = [
+    {
+      key: "all",
+      label: "All",
+      count: withStatus.length,
+      on: "bg-ink text-cream",
+      off: "bg-white text-ink/60 hover:bg-ink/10",
+    },
+    {
+      key: "waiting",
+      label: "Waiting",
+      count: counts.waiting,
+      on: "bg-purple text-cream",
+      off: "bg-purple/15 text-purple hover:bg-purple/25",
+    },
+    {
+      key: "active",
+      label: "Active",
+      count: counts.active,
+      on: "bg-green text-cream",
+      off: "bg-green/15 text-green hover:bg-green/25",
+    },
+    {
+      key: "expiring",
+      label: "Expiring",
+      count: counts.expiring,
+      on: "bg-yellow text-ink",
+      off: "bg-yellow/25 text-brown hover:bg-yellow/40",
+    },
+    {
+      key: "expired",
+      label: "Expired",
+      count: counts.expired,
+      on: "bg-coral text-cream",
+      off: "bg-coral/15 text-coral hover:bg-coral/25",
+    },
+    {
+      key: "checked_out",
+      label: "Left",
+      count: counts.checked_out,
+      on: "bg-ink text-cream",
+      off: "bg-ink/10 text-ink/50 hover:bg-ink/20",
+    },
   ];
 
   return (
@@ -285,12 +328,20 @@ export default function OpsDashboard() {
               and the header costs one band instead of three. */}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <StatBadge label="Waiting" count={counts.waiting} className="bg-purple/15 text-purple" />
-              <StatBadge label="Active" count={counts.active} className="bg-green/15 text-green" />
-              <StatBadge label="Expiring" count={counts.expiring} className="bg-yellow/25 text-brown" />
-              <StatBadge label="Expired" count={counts.expired} className="bg-coral/15 text-coral" />
-              <span className="whitespace-nowrap rounded-full bg-ink px-3.5 py-1 text-sm font-black text-cream">
-                {kidsInside} <span className="font-bold opacity-70">inside</span>
+              {filters.map((f) => (
+                <button
+                  key={f.key}
+                  onClick={() => setFilter(f.key)}
+                  aria-pressed={filter === f.key}
+                  className={`whitespace-nowrap rounded-full px-3.5 py-1 text-sm font-black transition-colors ${
+                    filter === f.key ? f.on : f.off
+                  }`}
+                >
+                  {f.count} <span className="font-bold opacity-80">{f.label}</span>
+                </button>
+              ))}
+              <span className="ml-1 whitespace-nowrap rounded-full border-2 border-ink px-3 py-0.5 text-sm font-black text-ink">
+                {kidsInside} <span className="font-bold opacity-60">inside</span>
               </span>
             </div>
             <SalesLine />
@@ -303,21 +354,6 @@ export default function OpsDashboard() {
 
       <div className="mx-auto w-full max-w-[1600px] px-4 py-3 lg:px-6">
         <AttendanceAlert />
-
-        {/* Filter tabs */}
-        <div className="mb-3 flex gap-1.5 overflow-x-auto pb-1">
-          {filters.map((f) => (
-            <button
-              key={f.key}
-              onClick={() => setFilter(f.key)}
-              className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-black transition-colors ${
-                filter === f.key ? "bg-ink text-cream" : "bg-white text-ink/60 hover:bg-ink/10"
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
 
         {/* Content */}
         {loading ? (
@@ -473,21 +509,5 @@ function BandLegend() {
         </span>
       ))}
     </div>
-  );
-}
-
-function StatBadge({
-  label,
-  count,
-  className,
-}: {
-  label: string;
-  count: number;
-  className: string;
-}) {
-  return (
-    <span className={`whitespace-nowrap rounded-full px-3.5 py-1 text-sm font-black ${className}`}>
-      {count} {label}
-    </span>
   );
 }
