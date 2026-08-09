@@ -26,6 +26,8 @@ export interface OpsSession {
   needsCheckIn: boolean;
   checkinAt: number | null;
   checkoutAt: number | null;
+  /** Taken off today's board as a no-show, unix ms — the invoice is untouched. */
+  removedAt?: number | null;
   /** True for locally-added membership visits (no invoice behind them). */
   isManual?: boolean;
 }
