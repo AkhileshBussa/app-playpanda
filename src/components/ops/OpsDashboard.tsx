@@ -14,7 +14,11 @@ import SalesLine from "./SalesLine";
 type Filter = "all" | OpsStatus;
 
 /** Optimistic check-in/out state applied over server data until the next poll. */
-type Override = { checkinAt?: number | null; checkoutAt?: number | null };
+type Override = {
+  checkinAt?: number | null;
+  checkoutAt?: number | null;
+  removedAt?: number | null;
+};
 
 const POLL_MS = 30_000;
 
@@ -210,6 +214,19 @@ export default function OpsDashboard() {
     [mutate]
   );
 
+  const handleRemove = useCallback(
+    (session: OpsSession, undo: boolean) => {
+      mutate(session.id, { removedAt: undo ? null : Date.now() }, () =>
+        fetch("/api/ops/remove", {
+          method: undo ? "DELETE" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: session.id }),
+        })
+      );
+    },
+    [mutate]
+  );
+
   // Merge API + manual sessions, apply optimistic overrides.
   const allSessions = [
     ...apiSessions,
@@ -219,7 +236,15 @@ export default function OpsDashboard() {
     return ov ? { ...s, ...ov } : s;
   });
 
-  const withStatus = allSessions.map((s) => ({ session: s, status: computeOpsStatus(s, now) }));
+  // Removed no-shows come off the board entirely — out of the cards, out of the
+  // filter counts, out of "inside". They aren't a status: a no-show never
+  // reached one, and giving them a sixth pill would put a tab on the header for
+  // the rarest thing on the board. They collect in a line at the bottom instead,
+  // which is all the undo needs.
+  const removedSessions = allSessions.filter((s) => s.removedAt != null);
+  const liveSessions = allSessions.filter((s) => s.removedAt == null);
+
+  const withStatus = liveSessions.map((s) => ({ session: s, status: computeOpsStatus(s, now) }));
 
   // Most urgent first: the card that needs someone to walk over to it is the
   // card your eye lands on. Waiting sits after the running timers — nobody is
@@ -251,6 +276,11 @@ export default function OpsDashboard() {
   const collapseLeft = filter === "all";
   const cards = collapseLeft ? filtered.filter((s) => s.status !== "checked_out") : filtered;
   const leftRows = collapseLeft ? filtered.filter((s) => s.status === "checked_out") : [];
+
+  // Only where someone would look for them: the whole board, or the Waiting tab
+  // they were removed from. On Active or Expired they'd be noise.
+  const removedRows =
+    filter === "all" || filter === "waiting" ? removedSessions : [];
 
   const counts = withStatus.reduce(
     (acc, s) => {
@@ -376,7 +406,7 @@ export default function OpsDashboard() {
           <div className="py-20 text-center">
             <p className="text-base font-bold text-coral">{error}</p>
           </div>
-        ) : filtered.length === 0 ? (
+        ) : filtered.length === 0 && removedRows.length === 0 ? (
           <div className="py-20 text-center">
             <Image
               src="/MascotWithoutBG.png"
@@ -416,6 +446,7 @@ export default function OpsDashboard() {
                     onCheckIn={handleCheckIn}
                     onUndoCheckIn={handleUndoCheckIn}
                     onCheckout={handleCheckout}
+                    onRemove={handleRemove}
                     onShowInvoice={setInvoiceFor}
                     onCollect={setCollectFor}
                   />
@@ -436,6 +467,25 @@ export default function OpsDashboard() {
                     key={session.id}
                     session={session}
                     onUndo={() => handleCheckout(session, true)}
+                  />
+                ))}
+              </div>
+            )}
+            {removedRows.length > 0 && (
+              <div
+                className={`max-w-3xl space-y-1 ${
+                  cards.length > 0 || leftRows.length > 0 ? "mt-4" : ""
+                }`}
+              >
+                <p className="px-1 pb-0.5 text-xs font-black uppercase tracking-wide text-ink/30">
+                  Removed · {removedRows.length}
+                </p>
+                {removedRows.map((session) => (
+                  <LeftRow
+                    key={session.id}
+                    session={session}
+                    label="No-show"
+                    onUndo={() => handleRemove(session, true)}
                   />
                 ))}
               </div>
@@ -483,13 +533,22 @@ export default function OpsDashboard() {
 }
 
 /**
- * A session that's already left, on the combined board: one line, grey, with
- * the Undo that's the only thing anyone still needs from it.
+ * A session that's off the live board — checked out, or removed as a no-show:
+ * one line, grey, with the Undo that's the only thing anyone still needs from
+ * it.
  *
  * Same fields the card leads with (who, how many, state, action) so it reads as
  * a compressed card rather than a different kind of object.
  */
-function LeftRow({ session, onUndo }: { session: OpsSession; onUndo: () => void }) {
+function LeftRow({
+  session,
+  label = "Left",
+  onUndo,
+}: {
+  session: OpsSession;
+  label?: string;
+  onUndo: () => void;
+}) {
   const name =
     session.kidNames.length > 0 ? session.kidNames.join(", ") : session.parentName || "—";
 
@@ -500,7 +559,7 @@ function LeftRow({ session, onUndo }: { session: OpsSession; onUndo: () => void 
         {session.kidCount} {session.kidCount === 1 ? "kid" : "kids"}
       </span>
       <span className="shrink-0 rounded-full bg-ink/10 px-2 py-0.5 text-[11px] font-black uppercase tracking-wide text-ink/45">
-        Left
+        {label}
       </span>
       <button
         onClick={onUndo}

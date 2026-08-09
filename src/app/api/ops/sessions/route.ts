@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { billing } from "@/lib/billing";
 import { isOpsAuthed } from "@/lib/ops/auth";
-import { getCheckins, getCheckouts } from "@/lib/ops/state";
+import { getCheckins, getCheckouts, getRemovals } from "@/lib/ops/state";
 import type { OpsSession } from "@/lib/ops/types";
 
 export const dynamic = "force-dynamic";
@@ -16,10 +16,11 @@ export async function GET() {
   }
 
   try {
-    const [sessions, checkins, checkouts] = await Promise.all([
+    const [sessions, checkins, checkouts, removals] = await Promise.all([
       billing.listTodaySessions(),
       getCheckins(),
       getCheckouts(),
+      getRemovals(),
     ]);
 
     const out: OpsSession[] = sessions.map(({ validationCode, ...s }) => ({
@@ -27,6 +28,7 @@ export async function GET() {
       needsCheckIn: validationCode != null,
       checkinAt: checkins[s.id] ?? null,
       checkoutAt: checkouts[s.id] ?? null,
+      removedAt: removals[s.id] ?? null,
     }));
 
     // `checkouts` is echoed raw so the client can apply it to manual

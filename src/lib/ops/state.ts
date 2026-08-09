@@ -7,10 +7,17 @@
  *                           both dashboards stay in sync during the transition)
  *   checkins:YYYY-MM-DD   — sessionId → unix ms  (new: when the timer starts
  *                           for app bookings validated at the counter)
+ *   removals:YYYY-MM-DD   — sessionId → unix ms  (new: bookings taken off the
+ *                           board without ever arriving — no-shows)
+ *
+ * Removals live here rather than in localStorage because two tablets share the
+ * board during the rush: a no-show cleared on one has to disappear from the
+ * other, and it has to survive the reload that follows a tablet going flat.
  */
 
 const CHECKINS_PREFIX = "checkins";
 const CHECKOUTS_PREFIX = "checkouts";
+const REMOVALS_PREFIX = "removals";
 
 // ── Upstash REST transport ───────────────────────────────────────────────────
 
@@ -96,3 +103,8 @@ export const getCheckouts = () => readDayHash(CHECKOUTS_PREFIX);
 export const setCheckout = (sessionId: string, at = Date.now()) =>
   setDayHash(CHECKOUTS_PREFIX, sessionId, at);
 export const clearCheckout = (sessionId: string) => clearDayHash(CHECKOUTS_PREFIX, sessionId);
+
+export const getRemovals = () => readDayHash(REMOVALS_PREFIX);
+export const setRemoval = (sessionId: string, at = Date.now()) =>
+  setDayHash(REMOVALS_PREFIX, sessionId, at);
+export const clearRemoval = (sessionId: string) => clearDayHash(REMOVALS_PREFIX, sessionId);

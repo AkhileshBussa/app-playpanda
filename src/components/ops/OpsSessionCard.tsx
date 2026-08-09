@@ -8,6 +8,7 @@ import {
   type OpsSession,
 } from "@/lib/ops/types";
 import { bandForEnd } from "@/lib/ops/bands";
+import { timeUpWhatsappLink } from "@/lib/ops/whatsapp";
 
 function formatTime(ms: number): string {
   return new Date(ms).toLocaleTimeString("en-IN", {
@@ -36,6 +37,8 @@ interface OpsSessionCardProps {
   onCheckIn: (session: OpsSession, code: string) => Promise<string | null>;
   onUndoCheckIn: (session: OpsSession) => void;
   onCheckout: (session: OpsSession, undo: boolean) => void;
+  /** Take a no-show off today's board (the invoice is left alone). */
+  onRemove?: (session: OpsSession, undo: boolean) => void;
   /** Open the invoice's line items; omitted for sessions with no invoice. */
   onShowInvoice?: (session: OpsSession) => void;
   /** Take payment against this session's invoice. */
@@ -47,6 +50,7 @@ export default function OpsSessionCard({
   onCheckIn,
   onUndoCheckIn,
   onCheckout,
+  onRemove,
   onShowInvoice,
   onCollect,
 }: OpsSessionCardProps) {
@@ -96,6 +100,10 @@ export default function OpsSessionCard({
 
   const kidNamesDisplay =
     session.kidNames.length > 0 ? session.kidNames.join(", ") : session.parentName || "—";
+
+  // Null when the session has no number we can open a chat with, which hides
+  // the button rather than offering one that goes nowhere.
+  const whatsappLink = timeUpWhatsappLink(session);
 
   // Manual membership visits have no invoice behind them, so there's nothing
   // for them to open.
@@ -247,7 +255,14 @@ export default function OpsSessionCard({
 
       {/* Actions */}
       {status === "waiting" ? (
-        <CheckInForm session={session} onCheckIn={onCheckIn} />
+        <>
+          <CheckInForm session={session} onCheckIn={onCheckIn} />
+          {/* No-shows: an online booking nobody turned up for sits on the board
+              all evening, and on a busy Saturday the Waiting count is what tells
+              the counter how many kids are still expected. Removing is the one
+              way a card can leave without ever having been here. */}
+          {onRemove && <RemoveButton onRemove={() => onRemove(session, false)} />}
+        </>
       ) : status === "checked_out" ? (
         <button
           onClick={() => onCheckout(session, true)}
@@ -257,6 +272,12 @@ export default function OpsSessionCard({
         </button>
       ) : (
         <>
+          {/* Sits above the checkout button because it's what happens first —
+              the parent has to be told before anyone can check them out. Only
+              once the clock has actually run out; offering it earlier means
+              telling a parent with time still on it that they're finished. */}
+          {status === "expired" && whatsappLink && <TimeUpWhatsapp href={whatsappLink} />}
+
           {/* `active` is precisely "more than the expiring window left", so it
               doubles as the test for a checkout that's probably a misclick. */}
           <CheckoutButton
@@ -274,6 +295,37 @@ export default function OpsSessionCard({
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * "Their time is up" — opens WhatsApp with the message already typed.
+ *
+ * Outlined rather than filled so it doesn't compete with Check Out (the action
+ * that actually clears the card) or with a green Collect button sitting right
+ * above it on an unpaid session.
+ *
+ * The marker says "opened", not "sent", because opened is all we know: the tap
+ * hands the screen to WhatsApp, and whether anyone pressed send there never
+ * comes back to us. It's local and best-effort — reset when the card leaves the
+ * current filter — and exists so a board watched by two people doesn't get the
+ * same parent messaged twice in a row, not as a record of anything.
+ */
+function TimeUpWhatsapp({ href }: { href: string }) {
+  const [opened, setOpened] = useState(false);
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={() => setOpened(true)}
+      className={`mt-2 block w-full rounded-full border-2 border-green py-2 text-center text-sm font-black transition-colors ${
+        opened ? "bg-green/10 text-green/60" : "text-green hover:bg-green/10"
+      }`}
+    >
+      {opened ? "WhatsApp opened · Open again" : "WhatsApp: time is up"}
+    </a>
   );
 }
 
@@ -322,6 +374,38 @@ function CheckoutButton({ early, onCheckout }: { early: boolean; onCheckout: () 
       }`}
     >
       {confirming ? "Tap to confirm" : "Check Out"}
+    </button>
+  );
+}
+
+/**
+ * Remove a no-show from the board — quiet, and two taps.
+ *
+ * Quiet because it's the last thing anyone should reach for on a waiting card;
+ * the code box above it is the point. Two taps because the card sits directly
+ * under a number pad someone is typing into at speed, and a stray tap that
+ * vanishes a booking sends the family that just walked in back to reception.
+ *
+ * Same disarm-on-its-own behaviour as the early checkout confirm, for the same
+ * reason: a card left armed is a trap for the next person holding the tablet.
+ */
+function RemoveButton({ onRemove }: { onRemove: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+
+  useEffect(() => {
+    if (!confirming) return;
+    const t = setTimeout(() => setConfirming(false), 3000);
+    return () => clearTimeout(t);
+  }, [confirming]);
+
+  return (
+    <button
+      onClick={() => (confirming ? onRemove() : setConfirming(true))}
+      className={`mt-1.5 w-full text-xs font-bold underline-offset-2 transition-colors ${
+        confirming ? "font-black text-coral underline" : "text-ink/40 hover:text-ink/70 hover:underline"
+      }`}
+    >
+      {confirming ? "Tap again to remove" : "Remove — didn't turn up"}
     </button>
   );
 }
