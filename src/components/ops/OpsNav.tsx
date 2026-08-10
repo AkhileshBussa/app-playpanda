@@ -14,6 +14,8 @@ import { useAttendanceAlert } from "./useAttendanceAlert";
  * plus two groups, so that's what the nav says:
  *
  *   ⏱ Sessions        the all-day screen — always one tap, never in a menu
+ *   🎟 Memberships     the counter's other daily screen, promoted out of the
+ *                      Customers menu because punching a visit is routine work
  *   Customers ▾       who's coming in and what they thought
  *   Operations ▾      what it takes to keep the place running
  *
@@ -42,6 +44,7 @@ interface Tool {
 }
 
 const SESSIONS: Tool = { href: "/ops", icon: "⏱", label: "Session monitor" };
+const MEMBERS: Tool = { href: "/members", icon: "🎟", label: "Memberships" };
 
 const GROUPS: { key: string; label: string; short: string; items: Tool[] }[] = [
   {
@@ -49,7 +52,6 @@ const GROUPS: { key: string; label: string; short: string; items: Tool[] }[] = [
     label: "Customers",
     short: "Cust",
     items: [
-      { href: "/members", icon: "🎟", label: "Memberships" },
       { href: "/school", icon: "🎒", label: "School partnerships" },
       { href: "/events", icon: "🎉", label: "Events" },
       { href: "/ops/feedback", icon: "⭐", label: "Customer feedback" },
@@ -146,6 +148,21 @@ export default function OpsNav() {
           </span>
           <span className="hidden sm:inline">{SESSIONS.label}</span>
           <span className="sm:hidden">Sessions</span>
+        </Link>
+
+        {/* A top-level peer of Sessions on the wide bar; on phones it lives in
+            the hamburger sheet instead of fighting Sessions for the row. */}
+        <Link
+          href={MEMBERS.href}
+          aria-current={under(pathname, MEMBERS.href) ? "page" : undefined}
+          className={`hidden h-10 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-sm font-black transition-colors sm:flex sm:px-4 ${
+            under(pathname, MEMBERS.href) ? "bg-ink text-cream" : "bg-white text-ink/60 hover:bg-ink/10"
+          }`}
+        >
+          <span aria-hidden className="text-base">
+            {MEMBERS.icon}
+          </span>
+          {MEMBERS.label}
         </Link>
 
         {/* Everything else folds into the hamburger below `sm`. */}
@@ -297,6 +314,22 @@ export default function OpsNav() {
                 </p>
               </Link>
             )}
+
+            {/* Memberships sits above the groups, mirroring its top-level spot
+                on the wide bar. */}
+            <Link
+              href={MEMBERS.href}
+              role="menuitem"
+              aria-current={under(pathname, MEMBERS.href) ? "page" : undefined}
+              className={`mb-1 flex items-center gap-2.5 rounded-2xl px-3 py-3 text-base font-black transition-colors ${
+                under(pathname, MEMBERS.href) ? "bg-ink text-cream" : "text-ink/70 hover:bg-ink/10"
+              }`}
+            >
+              <span aria-hidden className="text-base">
+                {MEMBERS.icon}
+              </span>
+              {MEMBERS.label}
+            </Link>
 
             {GROUPS.map((group) => (
               <div key={group.key} className="mb-1 last:mb-0">

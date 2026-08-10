@@ -188,22 +188,35 @@ export default function OpsSessionCard({
           );
         })()}
 
-        {/* Badges: membership marker + amount due (partial payments show the remainder) */}
-        {((session.isMembership && status !== "checked_out") ||
-          (session.amountDue > 0 && status !== "checked_out")) && (
-          <div className="mb-1.5 flex flex-wrap gap-1.5">
-            {session.isMembership && (
-              <span className="rounded-full bg-teal px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-cream">
-                Member
-              </span>
-            )}
-            {session.amountDue > 0 && (
-              <span className="rounded-full bg-yellow px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-ink">
-                ₹{session.amountDue.toLocaleString("en-IN")} due
-              </span>
-            )}
-          </div>
-        )}
+        {/* Badges: membership marker + money state. The money chip is always one
+            of two positives — yellow "due" or green "paid" — so the counter reads
+            the bill from the chip itself, never from a chip's absence. Memberships
+            and manual visits carry no bill, so they get neither. */}
+        {(() => {
+          const settled =
+            !session.isManual && !session.isMembership && session.paid && session.amountDue <= 0;
+          if (status === "checked_out" || (!session.isMembership && session.amountDue <= 0 && !settled))
+            return null;
+          return (
+            <div className="mb-1.5 flex flex-wrap gap-1.5">
+              {session.isMembership && (
+                <span className="rounded-full bg-teal px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-cream">
+                  Member
+                </span>
+              )}
+              {session.amountDue > 0 && (
+                <span className="rounded-full bg-yellow px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-ink">
+                  ₹{session.amountDue.toLocaleString("en-IN")} due
+                </span>
+              )}
+              {settled && (
+                <span className="rounded-full bg-green px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-cream">
+                  Paid ✓
+                </span>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Timer / waiting state */}
         <div className="flex-1 text-center">

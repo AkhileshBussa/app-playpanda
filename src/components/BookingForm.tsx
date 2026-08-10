@@ -96,6 +96,9 @@ export default function BookingForm() {
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   const [status, setStatus] = useState<Status>("idle");
+  // Which of the two equally-weighted buttons was tapped, so each shows its own
+  // busy label instead of both claiming the booking.
+  const [flow, setFlow] = useState<"online" | "counter">("online");
   const [error, setError] = useState<string | null>(null);
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [welcomeBack, setWelcomeBack] = useState<string | null>(null);
@@ -151,7 +154,7 @@ export default function BookingForm() {
     [packageId, kids, extraAdults, childSocks, adultSocks]
   );
 
-  const pay = async () => {
+  const pay = async (payOnline = true) => {
     // Button looks disabled until the form is valid but stays clickable, so a
     // tap surfaces the tip (and jumps to the field that needs filling).
     if (name.trim().length < 2) {
@@ -166,6 +169,7 @@ export default function BookingForm() {
     if (payInFlight.current) return;
     payInFlight.current = true;
     setError(null);
+    setFlow(payOnline ? "online" : "counter");
     setStatus("booking");
 
     try {
@@ -179,6 +183,8 @@ export default function BookingForm() {
         adultSocks,
         kidNames: kidNames.split(",").map((n) => n.trim()).filter(Boolean),
       };
+      // The key deliberately excludes payNow: whichever button was tapped, the
+      // same selection must reuse the same invoice, never create a second one.
       const cacheKey = JSON.stringify(payload);
 
       let checkout = checkoutCache.current?.key === cacheKey ? checkoutCache.current.data : null;
@@ -186,7 +192,7 @@ export default function BookingForm() {
         const res = await fetch("/api/checkout", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ ...payload, payNow: payOnline }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Something went wrong");
@@ -200,7 +206,7 @@ export default function BookingForm() {
       const goSuccess = () => router.push(`/success/${encodeURIComponent(number)}`);
 
       const order = checkout.payment;
-      if (checkout.skipPayment || !order) {
+      if (!payOnline || checkout.skipPayment || !order) {
         goSuccess();
         return;
       }
@@ -452,20 +458,50 @@ export default function BookingForm() {
             <div className="pt-1 text-[11px] font-bold text-ink/40">Prices include GST</div>
           </div>
         )}
-        <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => setShowBreakdown((v) => !v)}
+          className="text-left"
+        >
+          <div className="text-[11px] font-bold uppercase tracking-widest text-ink/50">
+            Total {showBreakdown ? "▾" : "▴"}
+          </div>
+          <div className="text-2xl font-black text-ink">{inr(quote.total)}</div>
+        </button>
+        {/* Two ways to book, weighted the same: paying now or at the counter is
+            the family's call, not something the layout should decide for them. */}
+        <div className="mt-2 flex gap-2.5">
+          {PAYMENTS_ENABLED && (
+            <button
+              type="button"
+              onClick={() => pay(false)}
+              // Same touchend treatment as the pay button — anything in this
+              // fixed bar shifts mid-gesture when the keyboard closes.
+              onTouchStart={() => {
+                touchMoved.current = false;
+              }}
+              onTouchMove={() => {
+                touchMoved.current = true;
+              }}
+              onTouchEnd={(e) => {
+                if (touchMoved.current || busy) return;
+                e.preventDefault();
+                pay(false);
+              }}
+              disabled={busy}
+              aria-disabled={!canSubmit}
+              className={`flex-1 touch-manipulation rounded-full border-2 py-4 text-base font-black transition-all duration-150 active:translate-y-[2px] ${
+                canSubmit
+                  ? "border-ink/15 bg-white text-ink shadow-btn hover:bg-cream/60 active:shadow-btn-pressed"
+                  : "border-ink/10 bg-white/50 text-ink/40"
+              } ${busy ? "opacity-60" : ""}`}
+            >
+              {flow === "counter" && status === "booking" ? "Booking…" : "Pay at counter"}
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => setShowBreakdown((v) => !v)}
-            className="text-left"
-          >
-            <div className="text-[11px] font-bold uppercase tracking-widest text-ink/50">
-              Total {showBreakdown ? "▾" : "▴"}
-            </div>
-            <div className="text-2xl font-black text-ink">{inr(quote.total)}</div>
-          </button>
-          <button
-            type="button"
-            onClick={pay}
+            onClick={() => pay()}
             // On mobile, tapping while the keyboard is open closes it and the
             // fixed bar shifts mid-gesture — the browser then drops the click.
             // touchend still targets the element the finger landed on, so it
@@ -483,16 +519,17 @@ export default function BookingForm() {
             }}
             disabled={busy}
             aria-disabled={!canSubmit}
-            className={`ml-auto inline-flex touch-manipulation items-center justify-center rounded-full px-8 py-4 text-base font-black text-cream transition-all duration-150 active:translate-y-[2px] ${
+            className={`flex-1 touch-manipulation rounded-full border-2 border-transparent py-4 text-base font-black text-cream transition-all duration-150 active:translate-y-[2px] ${
               canSubmit
                 ? "bg-coral shadow-btn hover:brightness-105 active:shadow-btn-pressed"
                 : "bg-coral/40"
             } ${busy ? "opacity-60" : ""}`}
           >
-            {status === "booking" && "Booking…"}
+            {flow === "online" && status === "booking" && "Booking…"}
             {status === "paying" && "Paying…"}
             {status === "verifying" && "Confirming…"}
-            {status === "idle" && (PAYMENTS_ENABLED ? `Pay ${inr(quote.total)}` : "Book now")}
+            {(status === "idle" || (flow === "counter" && status === "booking")) &&
+              (PAYMENTS_ENABLED ? `Pay ${inr(quote.total)}` : "Book now")}
           </button>
         </div>
       </div>

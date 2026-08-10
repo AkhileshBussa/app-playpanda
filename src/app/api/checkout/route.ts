@@ -13,6 +13,8 @@ const bookingSchema = z.object({
   childSocks: z.number().int().min(0).max(30),
   adultSocks: z.number().int().min(0).max(30),
   kidNames: z.array(z.string().trim().max(40)).max(15).optional(),
+  /** False = customer chose to pay at the counter; don't create a gateway order. */
+  payNow: z.boolean().optional(),
 });
 
 export async function POST(req: Request) {
@@ -44,7 +46,7 @@ export async function POST(req: Request) {
     // checkout. Any failure here degrades to pay-at-counter — the booking is
     // already saved and must never be lost to a payment hiccup.
     let payment: PaymentOrder | null = null;
-    if (paymentsEnabled) {
+    if (paymentsEnabled && input.payNow !== false) {
       try {
         // With rzp_test_ keys in env, orders are created in Razorpay TEST MODE
         // directly (Swipe's gateway flow is live-only). See lib/testGateway.
