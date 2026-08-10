@@ -20,6 +20,37 @@ type Override = {
   removedAt?: number | null;
 };
 
+/**
+ * What the server did with a removed booking's invoice. `refused` mirrors the
+ * billing port's reasons, plus "error" for a cancel that threw — the booking is
+ * off the board in every case, so the difference is only what someone still has
+ * to do in Swipe.
+ */
+interface InvoiceFate {
+  cancelled: boolean;
+  refused?: "paid" | "part-paid" | "shared-invoice" | "not-found" | "error";
+  invoiceNumber?: string;
+}
+
+/** One line for the Removed row — short enough to sit on a single line. */
+function fateNote(fate: InvoiceFate | undefined): string | null {
+  if (!fate) return null;
+  const inv = fate.invoiceNumber ? `${fate.invoiceNumber} ` : "";
+  if (fate.cancelled) return `${inv}cancelled`;
+  switch (fate.refused) {
+    case "paid":
+      return `${inv}paid — bill left open`;
+    case "part-paid":
+      return `${inv}part-paid — cancel it in Swipe`;
+    case "shared-invoice":
+      return "Shared invoice — bill left open";
+    case "not-found":
+      return "No invoice found";
+    default:
+      return "Bill needs checking in Swipe";
+  }
+}
+
 const POLL_MS = 30_000;
 
 /**
@@ -65,6 +96,10 @@ export default function OpsDashboard() {
   const [invoiceFor, setInvoiceFor] = useState<OpsSession | null>(null);
   /** Session we're taking payment for. */
   const [collectFor, setCollectFor] = useState<OpsSession | null>(null);
+  /** What became of each removed booking's invoice, keyed by session id. Lives
+   *  only for this page view — it's a receipt for the tap just made, not state
+   *  the board needs to reload. */
+  const [invoiceFates, setInvoiceFates] = useState<Record<string, InvoiceFate>>({});
   const [now, setNow] = useState(Date.now());
 
   // Actions in flight — while >0, keep optimistic overrides through polls.
@@ -215,16 +250,49 @@ export default function OpsDashboard() {
   );
 
   const handleRemove = useCallback(
-    (session: OpsSession, undo: boolean) => {
-      mutate(session.id, { removedAt: undo ? null : Date.now() }, () =>
-        fetch("/api/ops/remove", {
-          method: undo ? "DELETE" : "POST",
+    async (session: OpsSession, undo: boolean) => {
+      if (undo) {
+        // Undo only puts the card back. Whatever happened to the invoice
+        // already happened, so the note stays put next to it.
+        mutate(session.id, { removedAt: null }, () =>
+          fetch("/api/ops/remove", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: session.id }),
+          })
+        );
+        return;
+      }
+
+      // Not routed through `mutate`, because removal is the one action whose
+      // response the board has to read: the server decides what became of the
+      // invoice, and the manager needs telling.
+      pendingActions.current++;
+      setOverrides((prev) => ({
+        ...prev,
+        [session.id]: { ...prev[session.id], removedAt: Date.now() },
+      }));
+      try {
+        const res = await fetch("/api/ops/remove", {
+          method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: session.id }),
-        })
-      );
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.invoice) {
+          setInvoiceFates((prev) => ({ ...prev, [session.id]: data.invoice }));
+        }
+      } catch {
+        setInvoiceFates((prev) => ({
+          ...prev,
+          [session.id]: { cancelled: false, refused: "error" },
+        }));
+      } finally {
+        pendingActions.current--;
+        fetchSessions();
+      }
     },
-    [mutate]
+    [mutate, fetchSessions]
   );
 
   // Merge API + manual sessions, apply optimistic overrides.
@@ -485,6 +553,7 @@ export default function OpsDashboard() {
                     key={session.id}
                     session={session}
                     label="No-show"
+                    note={fateNote(invoiceFates[session.id])}
                     onUndo={() => handleRemove(session, true)}
                   />
                 ))}
@@ -543,10 +612,13 @@ export default function OpsDashboard() {
 function LeftRow({
   session,
   label = "Left",
+  note,
   onUndo,
 }: {
   session: OpsSession;
   label?: string;
+  /** What happened to the bill, for a removed no-show. */
+  note?: string | null;
   onUndo: () => void;
 }) {
   const name =
@@ -555,6 +627,11 @@ function LeftRow({
   return (
     <div className="flex items-center gap-2.5 rounded-xl border-2 border-ink/10 bg-white px-3 py-1.5">
       <span className="min-w-0 flex-1 truncate text-sm font-black text-ink/45">{name}</span>
+      {note && (
+        <span className="hidden shrink-0 truncate text-xs font-bold text-ink/35 sm:block">
+          {note}
+        </span>
+      )}
       <span className="shrink-0 text-sm font-bold text-ink/35">
         {session.kidCount} {session.kidCount === 1 ? "kid" : "kids"}
       </span>

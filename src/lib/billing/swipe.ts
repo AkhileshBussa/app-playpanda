@@ -15,6 +15,8 @@ import type {
   Booking,
   BookingDetails,
   BillingProvider,
+  CancelInvoiceInput,
+  CancelInvoiceResult,
   CreateBookingInput,
   CollectPaymentInput,
   CustomerProfile,
@@ -623,6 +625,9 @@ interface SessionInvoice {
   bookedAt: number; // unix ms
   paid: boolean;
   amountDue: number;
+  /** Invoice grand total, INR — with `amountDue`, tells a part-paid invoice
+   *  from an untouched one. */
+  total: number;
   validationCode: string | null;
   partyName: string;
   phone: string;
@@ -739,6 +744,23 @@ async function listTodayTransactions(): Promise<Array<Record<string, unknown>>> 
   return rows;
 }
 
+/**
+ * Delete a document in Swipe — the same call the Swipe web UI's delete makes.
+ *
+ * `notify_customer` is false by design. The UI defaults it to true, but this is
+ * fired by a manager clearing a no-show off the board, and a family who simply
+ * didn't come shouldn't get an automated cancellation notice for it. Anything
+ * the customer should hear about is a conversation someone has on purpose.
+ */
+async function deleteSwipeDoc(newHashId: string, remarks: string): Promise<void> {
+  await swipeCall("doc", "delete", {
+    new_hash_id: newHashId,
+    document_type: "invoice",
+    remarks,
+    notify_customer: false,
+  });
+}
+
 async function getSessionInvoice(newHashId: string): Promise<SessionInvoice | null> {
   const d = await swipeCall<SwipeResponse & { invoice_details?: Record<string, unknown> }>(
     "v2/doc",
@@ -773,6 +795,7 @@ function normalizeSessionInvoice(
     paid,
     // What's actually left to collect — Swipe tracks partial payments here.
     amountDue: Number(inv.amount_pending ?? (paid ? 0 : (inv.total_amount ?? 0))),
+    total: Number(inv.total_amount ?? 0),
     validationCode: readValidationCode(inv),
     partyName: String(cust.name ?? ""),
     phone: String(cust.phone_number ?? ""),
@@ -1066,6 +1089,33 @@ export const swipeBilling: BillingProvider = {
     const after = await findTransactionBySerial(serial);
     const amountDue = after ? pendingFromRow(after.row) : Math.max(0, pending - input.amount);
     return { invoiceNumber: serial, amountDue, paid: amountDue <= 0 };
+  },
+
+  async cancelSessionInvoice(input: CancelInvoiceInput): Promise<CancelInvoiceResult> {
+    // A split invoice's cards are `<hash>#0`, `<hash>#1`, … — one invoice
+    // covering several kids. Cancelling it would take out sessions belonging to
+    // kids who did turn up, so a shared invoice is never cancelled from here.
+    if (input.sessionId.includes("#")) {
+      return { cancelled: false, refused: "shared-invoice" };
+    }
+
+    // Re-read rather than trusting the board: the monitor polls every 30s, and
+    // in that window someone at the counter can have taken the money. This is
+    // the check that stops a paid invoice being deleted.
+    const invoice = await getSessionInvoice(input.sessionId);
+    if (!invoice) return { cancelled: false, refused: "not-found" };
+
+    if (invoice.paid || invoice.amountDue <= 0) {
+      return { cancelled: false, refused: "paid", invoiceNumber: invoice.serialNumber };
+    }
+    if (invoice.total > 0 && invoice.amountDue < invoice.total) {
+      // Something was collected and then the rest wasn't. Deleting the invoice
+      // would orphan that payment in the books — a person needs to sort it out.
+      return { cancelled: false, refused: "part-paid", invoiceNumber: invoice.serialNumber };
+    }
+
+    await deleteSwipeDoc(input.sessionId, input.remarks);
+    return { cancelled: true, invoiceNumber: invoice.serialNumber };
   },
 
   async createMembershipPunch(input: MembershipPunchInput): Promise<{ invoiceNumber: string }> {

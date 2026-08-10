@@ -109,6 +109,16 @@ export default function OpsSessionCard({
   // for them to open.
   const showInvoice = onShowInvoice && !session.isManual ? () => onShowInvoice(session) : null;
 
+  // Whether removing this booking will also cancel its invoice — the server
+  // decides for real (and re-checks against Swipe), but the confirm has to say
+  // which of the two things the next tap does. A `#` in the id means one invoice
+  // covers several cards, and those are never cancelled from here.
+  const cancelsInvoice =
+    !session.isManual &&
+    !session.paid &&
+    session.amountDue > 0 &&
+    !session.id.includes("#");
+
   return (
     <div
       // The max-width only bites in the narrow single-column band between the
@@ -261,7 +271,12 @@ export default function OpsSessionCard({
               all evening, and on a busy Saturday the Waiting count is what tells
               the counter how many kids are still expected. Removing is the one
               way a card can leave without ever having been here. */}
-          {onRemove && <RemoveButton onRemove={() => onRemove(session, false)} />}
+          {onRemove && (
+            <RemoveButton
+              cancelsInvoice={cancelsInvoice}
+              onRemove={() => onRemove(session, false)}
+            />
+          )}
         </>
       ) : status === "checked_out" ? (
         <button
@@ -388,8 +403,19 @@ function CheckoutButton({ early, onCheckout }: { early: boolean; onCheckout: () 
  *
  * Same disarm-on-its-own behaviour as the early checkout confirm, for the same
  * reason: a card left armed is a trap for the next person holding the tablet.
+ *
+ * When the bill is still unpaid the second tap also cancels it in Swipe, and
+ * that part cannot be undone — so the armed state says so outright rather than
+ * letting someone discover it afterwards. Undo puts the card back; it does not
+ * bring the invoice back.
  */
-function RemoveButton({ onRemove }: { onRemove: () => void }) {
+function RemoveButton({
+  cancelsInvoice,
+  onRemove,
+}: {
+  cancelsInvoice: boolean;
+  onRemove: () => void;
+}) {
   const [confirming, setConfirming] = useState(false);
 
   useEffect(() => {
@@ -405,7 +431,11 @@ function RemoveButton({ onRemove }: { onRemove: () => void }) {
         confirming ? "font-black text-coral underline" : "text-ink/40 hover:text-ink/70 hover:underline"
       }`}
     >
-      {confirming ? "Tap again to remove" : "Remove — didn't turn up"}
+      {confirming
+        ? cancelsInvoice
+          ? "Tap again — removes & cancels the bill"
+          : "Tap again to remove"
+        : "Remove — didn't turn up"}
     </button>
   );
 }
