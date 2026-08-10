@@ -97,6 +97,29 @@ export interface CollectPaymentInput {
   transactionRef?: string;
 }
 
+/** Ask to cancel the invoice behind a play session that never happened. */
+export interface CancelInvoiceInput {
+  /** The ops session handle (same id the monitor and check-in state use). */
+  sessionId: string;
+  /** Reason recorded against the cancellation, for whoever reads the books. */
+  remarks: string;
+}
+
+/**
+ * Why an invoice was left standing. Cancelling is deliberately refused rather
+ * than forced whenever money has moved or the invoice isn't ours alone to
+ * cancel — the caller reports it, nobody has to undo anything.
+ */
+export type CancelRefusal = "paid" | "part-paid" | "shared-invoice" | "not-found";
+
+export interface CancelInvoiceResult {
+  cancelled: boolean;
+  /** Set when `cancelled` is false. */
+  refused?: CancelRefusal;
+  /** The invoice this concerned, when we got far enough to know it. */
+  invoiceNumber?: string;
+}
+
 /** State of the invoice after a payment lands. */
 export interface PaymentResult {
   invoiceNumber: string;
@@ -223,6 +246,20 @@ export interface BillingProvider {
    * Rejects more than the outstanding balance. Returns what's left owing.
    */
   collectPayment(input: CollectPaymentInput): Promise<PaymentResult>;
+
+  /**
+   * Cancel the invoice behind a session that never happened — a no-show cleared
+   * off the ops board.
+   *
+   * Refuses rather than throws in the cases where cancelling would be wrong:
+   * anything collected against it (in full or in part), or an invoice shared
+   * with sessions that aren't being cancelled. Implementations MUST re-check
+   * this against the provider rather than trusting the caller, since the board
+   * that asks may be up to 30 seconds stale.
+   *
+   * There is no un-cancel. Callers should treat this as final.
+   */
+  cancelSessionInvoice(input: CancelInvoiceInput): Promise<CancelInvoiceResult>;
 
   /**
    * Punch one membership visit: upsert the customer and create the ₹0 invoice
