@@ -6,6 +6,10 @@
  * Swipe stays the book of record, so nothing about accounting or reporting
  * changes. There is deliberately no local expenses table to drift out of sync.
  *
+ * That includes who raised it: with no local row to hang a column on, the
+ * employee's name rides on the Swipe description as a "[by Name]" suffix and
+ * is parsed back out when listing. It reads fine inside Swipe's own UI too.
+ *
  * Endpoints (app.getswipe.in, company 2430519):
  *   POST v3/expenses/create      — raise one, returns the EXP- serial
  *   POST expenses/get            — list a date range (transactions[])
@@ -43,6 +47,9 @@ export interface ExpenseRecord {
   paymentMode: string;
   bankName: string;
   createdByName: string;
+  /** Employee picked on the /ops form, parsed from the description suffix.
+   *  Empty for expenses raised straight in Swipe. */
+  addedByName: string;
   attachmentCount: number;
 }
 
@@ -97,14 +104,20 @@ function categoryName(raw: unknown): string {
   return String(raw ?? "").trim() || "Uncategorised";
 }
 
+/** The "[by Name]" suffix createExpense appends to the description. */
+const ADDED_BY_RE = /\s*\[by ([^\][]+)\]\s*$/;
+
 function toExpense(r: any): ExpenseRecord {
+  const rawDescription = String(r.description ?? "");
+  const addedBy = rawDescription.match(ADDED_BY_RE);
   return {
     id: Number(r.id),
     serialNumber: String(r.serial_number ?? ""),
     expenseDate: String(r.expense_date ?? ""),
     category: categoryName(r.category),
     categoryId: Number(r.category_id ?? 0),
-    description: String(r.description ?? ""),
+    description: rawDescription.replace(ADDED_BY_RE, ""),
+    addedByName: addedBy ? addedBy[1].trim() : "",
     totalAmount: Number(r.total_amount ?? r.net_amount ?? 0),
     amountPaid: Number(r.amount_paid ?? 0),
     amountPending: Number(r.amount_pending ?? 0),
@@ -176,6 +189,8 @@ export interface CreateExpenseInput {
   category: string;
   description: string;
   paymentMode: PaymentMode;
+  /** Employee who raised it — appended to the description as "[by Name]". */
+  addedBy?: string;
   /** IST day the money went out, DD-MM-YYYY. Defaults to today. */
   expenseDate?: string;
   /** Public URLs of bill photos to attach to the Swipe record. */
@@ -195,6 +210,8 @@ export interface CreateExpenseResult {
  */
 export async function createExpense(input: CreateExpenseInput): Promise<CreateExpenseResult> {
   const date = input.expenseDate ?? swipeDate(new Date());
+  // Brackets are stripped from the name so the suffix always parses back out.
+  const addedBy = input.addedBy?.replace(/[\][]/g, "").trim();
   const body = await swipeRequest<{ serial_number?: string; id?: number; doc_count?: number }>(
     "v3/expenses",
     "create",
@@ -202,7 +219,7 @@ export async function createExpense(input: CreateExpenseInput): Promise<CreateEx
       total_amount: input.amount,
       expense_date: date,
       category: input.category,
-      description: input.description,
+      description: addedBy ? `${input.description} [by ${addedBy}]` : input.description,
       payment_date: date,
       payment_mode: input.paymentMode,
       bank_id: DEFAULT_BANK_ID,
