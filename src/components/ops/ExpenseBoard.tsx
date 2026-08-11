@@ -64,6 +64,22 @@ export default function ExpenseBoard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  // Who's raising the expense. A stand-in for real per-employee login: the
+  // form makes whoever's at the counter pick their name. Loaded once; if the
+  // roster is down the form simply omits the picker rather than jamming.
+  const [staff, setStaff] = useState<string[]>([]);
+
+  useEffect(() => {
+    fetch("/api/ops/employees")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        const names = (body?.employees ?? [])
+          .filter((e: { active: boolean }) => e.active)
+          .map((e: { name: string }) => e.name);
+        setStaff(names);
+      })
+      .catch(() => {});
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -183,7 +199,10 @@ export default function ExpenseBoard() {
                       </p>
                       <p className="text-xs font-bold text-ink/30">
                         {e.serialNumber}
-                        {e.createdByName && ` · ${e.createdByName}`}
+                        {/* Prefer the employee picked on the form; fall back to
+                            Swipe's own creator for expenses raised there. */}
+                        {(e.addedByName || e.createdByName) &&
+                          ` · ${e.addedByName || e.createdByName}`}
                       </p>
                     </div>
                     <div className="shrink-0 text-right">
@@ -205,6 +224,7 @@ export default function ExpenseBoard() {
       {adding && (
         <AddExpenseSheet
           categories={data?.categories ?? []}
+          staff={staff}
           onClose={() => setAdding(false)}
           onAdded={() => {
             setAdding(false);
@@ -218,10 +238,12 @@ export default function ExpenseBoard() {
 
 function AddExpenseSheet({
   categories,
+  staff,
   onClose,
   onAdded,
 }: {
   categories: ExpenseCategory[];
+  staff: string[];
   onClose: () => void;
   onAdded: () => void;
 }) {
@@ -230,6 +252,9 @@ function AddExpenseSheet({
   const [newCategory, setNewCategory] = useState("");
   const [description, setDescription] = useState("");
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("UPI");
+  // Deliberately starts unpicked — defaulting to the first name would quietly
+  // pin every expense on whoever sorts first.
+  const [addedBy, setAddedBy] = useState("");
   const [photoUrl, setPhotoUrl] = useState("");
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -271,6 +296,7 @@ function AddExpenseSheet({
           ...(categoryId === "new" ? { newCategory } : {}),
           description,
           paymentMode,
+          ...(addedBy ? { addedBy } : {}),
           attachments: photoUrl ? [photoUrl] : [],
         }),
       });
@@ -290,7 +316,9 @@ function AddExpenseSheet({
   const valid =
     Number(amount) > 0 &&
     description.trim().length > 0 &&
-    (categoryId !== "new" || newCategory.trim().length > 0);
+    (categoryId !== "new" || newCategory.trim().length > 0) &&
+    // A name must be picked whenever there's a roster to pick from.
+    (staff.length === 0 || addedBy !== "");
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto sm:items-center sm:p-4">
@@ -381,6 +409,34 @@ function AddExpenseSheet({
             ))}
           </div>
         </div>
+
+        {staff.length > 0 && (
+          <label className="mt-3 block">
+            <span className="mb-1.5 block px-1 text-sm font-black text-ink/60">Added by</span>
+            <span className="relative block">
+              <select
+                value={addedBy}
+                onChange={(e) => setAddedBy(e.target.value)}
+                className="w-full cursor-pointer appearance-none rounded-2xl border-2 border-ink/10 bg-white py-3 pl-4 pr-10 text-base font-bold text-ink outline-none focus:border-coral"
+              >
+                <option value="" disabled>
+                  Who&apos;s adding this?
+                </option>
+                {staff.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+              <span
+                aria-hidden
+                className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[10px] leading-none text-ink/40"
+              >
+                ▼
+              </span>
+            </span>
+          </label>
+        )}
 
         <div className="mt-3">
           <span className="mb-1.5 block px-1 text-sm font-black text-ink/60">Bill photo</span>

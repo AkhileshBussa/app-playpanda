@@ -19,6 +19,9 @@ const createSchema = z.object({
   newCategory: z.string().trim().max(60).optional(),
   description: z.string().trim().min(1, "Say what it was for").max(300),
   paymentMode: z.enum(PAYMENT_MODES),
+  /** Employee raising it. Optional here so the form still works if the roster
+   *  can't load; the form itself requires a pick whenever it has one to offer. */
+  addedBy: z.string().trim().min(1).max(60).optional(),
   attachments: z.array(z.string().url()).max(5).default([]),
 });
 
@@ -77,6 +80,7 @@ export async function POST(req: Request) {
       category,
       description: input.description,
       paymentMode: input.paymentMode,
+      addedBy: input.addedBy,
       attachments: input.attachments,
     });
     return NextResponse.json({ expense: result });
