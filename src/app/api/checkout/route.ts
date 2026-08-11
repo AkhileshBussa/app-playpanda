@@ -3,6 +3,8 @@ import { z } from "zod";
 import { computeQuote, PACKAGES, type PackageId } from "@/lib/pricing";
 import { billing, type PaymentOrder } from "@/lib/billing";
 import { createTestOrder, testGatewayEnabled } from "@/lib/testGateway";
+import { HEARD_FROM_SOURCES } from "@/lib/heardFrom";
+import { recordHeardFrom } from "@/lib/staff/db";
 
 const bookingSchema = z.object({
   name: z.string().trim().min(2, "Please enter your name").max(60),
@@ -15,6 +17,8 @@ const bookingSchema = z.object({
   kidNames: z.array(z.string().trim().max(40)).max(15).optional(),
   /** False = customer chose to pay at the counter; don't create a gateway order. */
   payNow: z.boolean().optional(),
+  /** "How did you hear about us?" — the form only offers it to new customers. */
+  heardFrom: z.array(z.enum(HEARD_FROM_SOURCES)).max(HEARD_FROM_SOURCES.length).default([]),
 });
 
 export async function POST(req: Request) {
@@ -41,6 +45,20 @@ export async function POST(req: Request) {
       validationCode,
     });
 
+    // The marketing answer is best-effort: losing it must never lose a booking.
+    if (input.heardFrom.length) {
+      try {
+        await recordHeardFrom({
+          phone: input.phone,
+          name: input.name,
+          invoice: booking.invoiceNumber,
+          sources: [...input.heardFrom],
+        });
+      } catch (err) {
+        console.error("heard-from save failed:", err);
+      }
+    }
+
     // The invoice now exists in the billing backend (unpaid). With payments
     // on, also create a gateway order so the browser can open Razorpay
     // checkout. Any failure here degrades to pay-at-counter — the booking is
@@ -57,6 +75,7 @@ export async function POST(req: Request) {
         console.error("payment order creation failed (falling back to counter):", err);
       }
     }
+
 
     return NextResponse.json({
       skipPayment: payment == null,

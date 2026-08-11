@@ -97,6 +97,18 @@ const ensureSchema = onceSchema(`
     created_at BIGINT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS feedback_created_idx ON feedback (created_at);
+
+  -- How first-time families found us — the optional question on the booking
+  -- form. One row per answered booking; sources is a comma-joined list.
+  CREATE TABLE IF NOT EXISTS heard_from (
+    id TEXT PRIMARY KEY,
+    phone TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    invoice TEXT NOT NULL DEFAULT '',
+    sources TEXT NOT NULL,
+    created_at BIGINT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS heard_from_created_idx ON heard_from (created_at);
 `);
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -552,6 +564,23 @@ export async function listFeedback(limit = 200): Promise<Feedback[]> {
     [limit]
   );
   return rows.map(toFeedback);
+}
+
+// ── How they found us ────────────────────────────────────────────────────────
+
+/** One row per first-time booking that answered "how did you hear about us?". */
+export async function recordHeardFrom(input: {
+  phone: string;
+  name: string;
+  invoice: string;
+  sources: string[];
+}): Promise<void> {
+  await ensureSchema();
+  await getPool().query(
+    `INSERT INTO heard_from (id, phone, name, invoice, sources, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [randomUUID(), input.phone, input.name, input.invoice, input.sources.join(", "), Date.now()]
+  );
 }
 
 /* eslint-enable @typescript-eslint/no-explicit-any */

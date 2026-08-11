@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { computeQuote, EXTRA_ADULT, PACKAGES, SOCKS, type PackageId } from "@/lib/pricing";
+import { HEARD_FROM_SOURCES } from "@/lib/heardFrom";
 
 const inr = (n: number) => `₹${n.toLocaleString("en-IN")}`;
 
@@ -102,6 +103,10 @@ export default function BookingForm() {
   const [error, setError] = useState<string | null>(null);
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [welcomeBack, setWelcomeBack] = useState<string | null>(null);
+  // True only once the lookup has confirmed the phone is new to us — that's
+  // when the optional "how did you hear about us?" question appears.
+  const [isNewCustomer, setIsNewCustomer] = useState(false);
+  const [heardFrom, setHeardFrom] = useState<string[]>([]);
 
   const canSubmit = name.trim().length >= 2 && /^[6-9]\d{9}$/.test(phone);
 
@@ -111,6 +116,7 @@ export default function BookingForm() {
   useEffect(() => {
     if (!/^[6-9]\d{9}$/.test(phone)) {
       setWelcomeBack(null);
+      setIsNewCustomer(false);
       return;
     }
     let cancelled = false;
@@ -118,7 +124,15 @@ export default function BookingForm() {
       try {
         const res = await fetch(`/api/customer/lookup?phone=${phone}`);
         const data = await res.json();
-        if (cancelled || !data.found) return;
+        if (cancelled) return;
+        if (!data.found) {
+          // First visit — this is the one moment to ask how they found us.
+          // Clear any welcome-back note left by a previously typed number.
+          setIsNewCustomer(true);
+          setWelcomeBack(null);
+          return;
+        }
+        setIsNewCustomer(false);
         setWelcomeBack(typeof data.name === "string" ? data.name : "");
         if (!nameTouched.current && data.name) setName(data.name);
         if (!kidNamesTouched.current && Array.isArray(data.kidNames) && data.kidNames.length) {
@@ -182,6 +196,7 @@ export default function BookingForm() {
         childSocks,
         adultSocks,
         kidNames: kidNames.split(",").map((n) => n.trim()).filter(Boolean),
+        ...(isNewCustomer && heardFrom.length ? { heardFrom } : {}),
       };
       // The key deliberately excludes payNow: whichever button was tapped, the
       // same selection must reuse the same invoice, never create a second one.
@@ -331,6 +346,41 @@ export default function BookingForm() {
             </div>
           )}
         </section>
+
+        {/* First visit only: one optional tap that tells us which marketing
+            actually works. Returning families never see it. */}
+        {isNewCustomer && (
+          <section className="rounded-chunk bg-white p-4 shadow-chunk">
+            <div className="text-base font-black text-ink">How did you hear about us?</div>
+            <div className="text-xs font-bold text-ink/50">Optional — tap any that apply</div>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {HEARD_FROM_SOURCES.map((source) => {
+                const selected = heardFrom.includes(source);
+                return (
+                  <label
+                    key={source}
+                    className={`cursor-pointer rounded-full px-3.5 py-2 text-sm font-black transition-colors ${
+                      selected ? "bg-green text-cream" : "bg-cream text-ink/60"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={() =>
+                        setHeardFrom((prev) =>
+                          selected ? prev.filter((s) => s !== source) : [...prev, source]
+                        )
+                      }
+                      className="sr-only"
+                    />
+                    {selected && "✓ "}
+                    {source}
+                  </label>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         {/* Package — the choice that drives the price, so it comes first. */}
         <section>
