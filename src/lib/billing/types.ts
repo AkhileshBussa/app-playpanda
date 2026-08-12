@@ -92,7 +92,9 @@ export interface CollectPaymentInput {
   invoiceNumber: string;
   /** Amount collected now, INR. May be part of the outstanding balance. */
   amount: number;
-  method: PaymentMethod;
+  /** The counter UI offers PAYMENT_METHODS; the gateway webhook also passes
+   *  labels like "Net Banking"/"Wallet", which Swipe records as given. */
+  method: PaymentMethod | (string & {});
   /** UPI/card reference, if the counter noted one. */
   transactionRef?: string;
 }
@@ -146,8 +148,9 @@ export interface MembershipSaleInvoice {
 }
 
 /**
- * A gateway payment order the browser opens checkout with (Razorpay). Created
- * by the billing provider's connected gateway account — we hold no gateway keys.
+ * A gateway payment order the browser opens checkout with. Created on our own
+ * Razorpay account (see lib/razorpay.ts) — the billing provider only hears
+ * about the payment after the fact, via recordPayment/collectPayment.
  */
 export interface PaymentOrder {
   /** Gateway order id, e.g. Razorpay "order_...". */
@@ -157,19 +160,6 @@ export interface PaymentOrder {
   /** Amount in the smallest currency unit (paise for INR). */
   amountMinor: number;
   currency: string;
-}
-
-export interface ConfirmOnlinePaymentInput {
-  /** The opaque `ref` returned by createBooking. */
-  ref: string;
-  /** The order id the checkout was opened with. */
-  orderId: string;
-  /** Gateway payment id, e.g. Razorpay "pay_...". */
-  paymentId: string;
-  /** Gateway signature over (orderId, paymentId) — the provider verifies it. */
-  signature: string;
-  /** Full raw checkout response, passed through to the provider. */
-  raw?: Record<string, unknown>;
 }
 
 /** Returning-customer details, for prefilling the booking form. */
@@ -299,19 +289,6 @@ export interface BillingProvider {
    * the pick-list for linking a membership to the sale it was billed on.
    */
   listTodayMembershipSales(): Promise<MembershipSaleInvoice[]>;
-
-  /**
-   * Create an online-payment order for the booking on the provider's connected
-   * gateway. Returns null when online collection isn't available (gateway not
-   * connected / not supported) — callers fall back to pay-at-counter.
-   */
-  createPaymentOrder(ref: string): Promise<PaymentOrder | null>;
-
-  /**
-   * Verify and record a completed online payment. The provider checks the
-   * gateway signature and marks the invoice paid; throws if verification fails.
-   */
-  confirmOnlinePayment(input: ConfirmOnlinePaymentInput): Promise<void>;
 
   /**
    * All play sessions from today's invoices, for the ops session monitor.

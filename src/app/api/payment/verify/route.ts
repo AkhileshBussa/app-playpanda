@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { billing } from "@/lib/billing";
-import { fetchTestPayment, testGatewayEnabled, verifyTestSignature } from "@/lib/testGateway";
+import {
+  claimPaymentRecord,
+  fetchPayment,
+  releasePaymentRecord,
+  verifyCheckoutSignature,
+} from "@/lib/razorpay";
 
 const verifySchema = z.object({
   ref: z.string().min(1),
@@ -12,9 +17,11 @@ const verifySchema = z.object({
 });
 
 /**
- * Called by the browser after Razorpay checkout succeeds. The billing backend
- * verifies the gateway signature and marks the invoice paid — no gateway keys
- * live on our side, so a forged signature simply fails verification there.
+ * Called by the browser after Razorpay checkout succeeds. The signature is
+ * verified here with our key secret, then the payment is re-fetched from
+ * Razorpay — the authority on amount and capture — before being recorded on
+ * the invoice. The webhook (/api/payment/webhook) covers the same payment if
+ * this call never arrives; the Redis claim keeps the two from double-recording.
  */
 export async function POST(req: Request) {
   let input: z.infer<typeof verifySchema>;
@@ -24,23 +31,32 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
 
+  if (!verifyCheckoutSignature(input.orderId, input.paymentId, input.signature)) {
+    return NextResponse.json({ error: "Payment verification failed" }, { status: 400 });
+  }
+
   try {
-    if (testGatewayEnabled()) {
-      // Test-mode payment: the order was created directly on Razorpay (not by
-      // Swipe), so verify the signature locally and record the payment on the
-      // invoice counter-style. pay_success_v2 only knows live Swipe orders.
-      if (!verifyTestSignature(input.orderId, input.paymentId, input.signature)) {
-        return NextResponse.json({ error: "Payment verification failed" }, { status: 400 });
+    const paid = await fetchPayment(input.paymentId);
+    // The signature proves the ids belong together; the fetch proves the money
+    // actually moved (captured) and how much, independent of anything the
+    // browser claims.
+    if (!paid.captured || paid.orderId !== input.orderId) {
+      return NextResponse.json({ error: "Payment not captured" }, { status: 400 });
+    }
+
+    if (await claimPaymentRecord(input.paymentId)) {
+      try {
+        await billing.recordPayment({
+          ref: input.ref,
+          amount: paid.amountInr,
+          method: paid.method,
+          transactionRef: input.paymentId,
+        });
+      } catch (err) {
+        // Give the claim back so the webhook (or a retry) can still record it.
+        await releasePaymentRecord(input.paymentId);
+        throw err;
       }
-      const paid = await fetchTestPayment(input.paymentId);
-      await billing.recordPayment({
-        ref: input.ref,
-        amount: paid.amountInr,
-        method: paid.method,
-        transactionRef: input.paymentId,
-      });
-    } else {
-      await billing.confirmOnlinePayment(input);
     }
     return NextResponse.json({ ok: true });
   } catch (err) {
