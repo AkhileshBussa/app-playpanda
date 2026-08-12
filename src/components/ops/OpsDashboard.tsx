@@ -9,6 +9,7 @@ import OpsSessionCard from "./OpsSessionCard";
 import AddVisit from "./AddVisit";
 import InvoiceItemsSheet from "./InvoiceItemsSheet";
 import CollectPaymentSheet from "./CollectPaymentSheet";
+import ApplyDiscountSheet from "./ApplyDiscountSheet";
 import SalesLine from "./SalesLine";
 
 type Filter = "all" | OpsStatus;
@@ -96,6 +97,8 @@ export default function OpsDashboard() {
   const [invoiceFor, setInvoiceFor] = useState<OpsSession | null>(null);
   /** Session we're taking payment for. */
   const [collectFor, setCollectFor] = useState<OpsSession | null>(null);
+  /** Session we're discounting before taking payment. */
+  const [discountFor, setDiscountFor] = useState<OpsSession | null>(null);
   /** What became of each removed booking's invoice, keyed by session id. Lives
    *  only for this page view — it's a receipt for the tap just made, not state
    *  the board needs to reload. */
@@ -517,6 +520,7 @@ export default function OpsDashboard() {
                     onRemove={handleRemove}
                     onShowInvoice={setInvoiceFor}
                     onCollect={setCollectFor}
+                    onDiscount={setDiscountFor}
                   />
                 ))}
               </div>
@@ -588,6 +592,26 @@ export default function OpsDashboard() {
               [session.id]: { ...prev[session.id], amountDue, paid: amountDue <= 0 },
             }));
             fetchSessions();
+          }}
+        />
+      )}
+
+      {discountFor && (
+        <ApplyDiscountSheet
+          session={discountFor}
+          onClose={() => setDiscountFor(null)}
+          onApplied={(session, net) => {
+            setDiscountFor(null);
+            // The invoice was re-priced, so what's due changed. Show it at once
+            // and let the next poll confirm it against Swipe.
+            setOverrides((prev) => ({
+              ...prev,
+              [session.id]: { ...prev[session.id], amountDue: net, paid: net <= 0 },
+            }));
+            fetchSessions();
+            // Straight into collecting: the discount was the negotiation, and
+            // taking the money is what happens next in the same conversation.
+            if (net > 0) setCollectFor({ ...session, amountDue: net });
           }}
         />
       )}

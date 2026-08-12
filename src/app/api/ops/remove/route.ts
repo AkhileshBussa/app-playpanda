@@ -3,6 +3,8 @@ import { z } from "zod";
 import { billing } from "@/lib/billing";
 import { isOpsAuthed } from "@/lib/ops/auth";
 import { setRemoval, clearRemoval } from "@/lib/ops/state";
+import { dbConfigured } from "@/lib/pg";
+import { releaseForInvoice } from "@/lib/discounts/db";
 
 export const dynamic = "force-dynamic";
 
@@ -54,6 +56,13 @@ export async function POST(req: Request) {
       sessionId: id,
       remarks: "No-show — cleared from the session monitor",
     });
+    // A cancelled booking gives its discount code back: the invoice it was
+    // spent on no longer exists, so the family (or the next one) can use it.
+    if (result.cancelled && result.invoiceNumber && dbConfigured()) {
+      await releaseForInvoice(result.invoiceNumber).catch((err) =>
+        console.error("failed to release discount after cancel:", err)
+      );
+    }
     return NextResponse.json({ ok: true, invoice: result });
   } catch (err) {
     // The booking is off the board either way; the invoice just needs a human.

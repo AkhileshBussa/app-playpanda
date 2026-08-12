@@ -6,6 +6,8 @@ import {
   releasePaymentRecord,
   verifyWebhookSignature,
 } from "@/lib/razorpay";
+import { dbConfigured } from "@/lib/pg";
+import { attachPayment } from "@/lib/discounts/db";
 
 export const dynamic = "force-dynamic";
 
@@ -70,6 +72,13 @@ export async function POST(req: Request) {
       method: methodLabel(payment?.method),
       transactionRef: paymentId,
     });
+    // Tie the payment to its redemption when the booking used a code. Never
+    // allowed to affect the response: Razorpay would retry a recorded payment.
+    if (dbConfigured()) {
+      await attachPayment({ invoice: invoiceNumber, rzpPaymentId: paymentId }).catch((err) =>
+        console.error("failed to link webhook payment to redemption:", err)
+      );
+    }
     return NextResponse.json({ ok: true, invoiceNumber, amountDue: result.amountDue });
   } catch (err) {
     // Unknown invoice, already-settled, or over-collection are permanent:
