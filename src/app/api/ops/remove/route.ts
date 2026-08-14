@@ -5,6 +5,7 @@ import { isOpsAuthed } from "@/lib/ops/auth";
 import { setRemoval, clearRemoval } from "@/lib/ops/state";
 import { dbConfigured } from "@/lib/pg";
 import { releaseForInvoice } from "@/lib/discounts/db";
+import { markInvoiceCancelled, stampInvoiceSession } from "@/lib/invoices/db";
 
 export const dynamic = "force-dynamic";
 
@@ -44,11 +45,19 @@ export async function POST(req: Request) {
   const id = await parseId(req);
   if (!id) return NextResponse.json({ error: "Invalid request" }, { status: 400 });
 
+  const removedAt = Date.now();
   try {
-    await setRemoval(id);
+    await setRemoval(id, removedAt);
   } catch (err) {
     console.error("remove failed:", err);
     return NextResponse.json({ error: "Could not remove booking" }, { status: 502 });
+  }
+
+  // Durable copy of the board marker; Redis stays the day's fast path.
+  if (dbConfigured()) {
+    await stampInvoiceSession("removed", id, removedAt).catch((err) =>
+      console.error("removal stamp failed:", err)
+    );
   }
 
   try {
@@ -58,7 +67,11 @@ export async function POST(req: Request) {
     });
     // A cancelled booking gives its discount code back: the invoice it was
     // spent on no longer exists, so the family (or the next one) can use it.
+    // The mirror row is kept and marked cancelled — history survives.
     if (result.cancelled && result.invoiceNumber && dbConfigured()) {
+      await markInvoiceCancelled(result.invoiceNumber).catch((err) =>
+        console.error("failed to mark mirror invoice cancelled:", err)
+      );
       await releaseForInvoice(result.invoiceNumber).catch((err) =>
         console.error("failed to release discount after cancel:", err)
       );
@@ -81,6 +94,11 @@ export async function DELETE(req: Request) {
 
   try {
     await clearRemoval(id);
+    if (dbConfigured()) {
+      await stampInvoiceSession("removed", id, null).catch((err) =>
+        console.error("removal unstamp failed:", err)
+      );
+    }
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error("undo remove failed:", err);

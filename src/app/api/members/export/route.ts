@@ -36,12 +36,16 @@ export async function GET(req: Request) {
   try {
     let body: string;
     if (what === "visits") {
-      const visits = await listAllVisits();
+      // Visits no longer carry a phone of their own — it lives on the
+      // membership's customer, so join it in for the sheet.
+      const [visits, memberships] = await Promise.all([listAllVisits(), listAllMemberships()]);
+      const phoneByMembership = new Map(memberships.map((m) => [m.id, m.phone]));
       body = csv([
         ["Visited at (IST)", "Date", "Phone", "Kids in", "Plays used", "Kid names",
          "Punch invoice", "Deleted at (IST)", "Deleted reason", "Membership ID"],
         ...visits.map((v) => [
-          istDateTime(v.visitedAt), v.visitDate, v.phone, v.kidsCount, v.playsUsed,
+          istDateTime(v.visitedAt), v.visitDate, phoneByMembership.get(v.membershipId) ?? "",
+          v.kidsCount, v.playsUsed,
           v.kidNames, v.punchInvoiceNumber,
           v.deletedAt ? istDateTime(v.deletedAt) : "", v.deletedReason, v.membershipId,
         ]),

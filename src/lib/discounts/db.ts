@@ -1,6 +1,5 @@
 /**
- * Discount-code store — codes and their redemptions, in the same Postgres as
- * memberships and the staff tools.
+ * Discount-code store — codes and their redemptions.
  *
  * Postgres is the ledger of record here, deliberately. The discount itself also
  * lands on the Swipe invoice (that's what the books and GST run on) and, for
@@ -13,10 +12,18 @@
  * family then abandons Razorpay, they still owe the reduced amount at the
  * counter, so the code is rightly spent. The only thing that gives it back is
  * cancelling the invoice (the no-show path), which releases the row.
+ *
+ * Redemptions reference customers and invoices by OUR ids. The customer NAME
+ * is still stored alongside (same reason the expense flow stores employee
+ * names): the ledger has to stay readable even when there's no customer row —
+ * a counter one-off with no phone — or the linked rows change later. The
+ * invoice number is mirrored into metadata for the same reason.
  */
 
 import { randomUUID } from "node:crypto";
-import { getPool, onceSchema } from "../pg";
+import { getPool } from "../pg";
+import { ensureSchema, ms, msOrNull, TS } from "../db/schema";
+import { upsertCustomer } from "../customers/db";
 import {
   DiscountError,
   type DiscountChannel,
@@ -25,67 +32,6 @@ import {
   type DiscountRedemption,
   type DiscountUsage,
 } from "./types";
-
-/**
- * created_by_employee_id / applied_by_employee_id are plain TEXT rather than
- * foreign keys to `employees`: that table is created by staff/db.ts's own
- * schema block, and whichever feature is touched first in a cold process would
- * otherwise decide whether this DDL succeeds. The employee NAME is stored
- * alongside the id for the same reason the expense flow stores it — the ledger
- * has to stay readable even if the roster row is later deactivated.
- */
-const ensureSchema = onceSchema(`
-  CREATE TABLE IF NOT EXISTS discount_codes (
-    id TEXT PRIMARY KEY,
-    code TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    value NUMERIC NOT NULL,
-    max_discount NUMERIC,
-    min_order NUMERIC NOT NULL DEFAULT 0,
-    usage TEXT NOT NULL DEFAULT 'multi',
-    per_customer_limit INTEGER,
-    total_limit INTEGER,
-    starts_at BIGINT,
-    expires_at BIGINT,
-    active BOOLEAN NOT NULL DEFAULT TRUE,
-    channels TEXT NOT NULL DEFAULT 'online,counter',
-    note TEXT NOT NULL DEFAULT '',
-    created_by_employee_id TEXT,
-    created_by_name TEXT NOT NULL DEFAULT '',
-    created_at BIGINT NOT NULL
-  );
-  -- Codes are matched case-insensitively, so uniqueness has to be too.
-  CREATE UNIQUE INDEX IF NOT EXISTS discount_codes_code_idx
-    ON discount_codes (upper(code));
-
-  CREATE TABLE IF NOT EXISTS discount_redemptions (
-    id TEXT PRIMARY KEY,
-    code_id TEXT REFERENCES discount_codes(id) ON DELETE SET NULL,
-    code TEXT NOT NULL,
-    phone TEXT NOT NULL DEFAULT '',
-    customer_name TEXT NOT NULL DEFAULT '',
-    invoice TEXT NOT NULL DEFAULT '',
-    gross NUMERIC NOT NULL,
-    discount NUMERIC NOT NULL,
-    net NUMERIC NOT NULL,
-    channel TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'applied',
-    rzp_order_id TEXT NOT NULL DEFAULT '',
-    rzp_payment_id TEXT NOT NULL DEFAULT '',
-    applied_by_employee_id TEXT,
-    applied_by_name TEXT NOT NULL DEFAULT '',
-    reason TEXT NOT NULL DEFAULT '',
-    created_at BIGINT NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS discount_redemptions_code_idx
-    ON discount_redemptions (code_id);
-  CREATE INDEX IF NOT EXISTS discount_redemptions_phone_idx
-    ON discount_redemptions (code_id, phone);
-  CREATE INDEX IF NOT EXISTS discount_redemptions_invoice_idx
-    ON discount_redemptions (invoice);
-  CREATE INDEX IF NOT EXISTS discount_redemptions_created_idx
-    ON discount_redemptions (created_at);
-`);
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -103,8 +49,8 @@ function toCode(r: any): DiscountCode {
     usage: r.usage as DiscountUsage,
     perCustomerLimit: r.per_customer_limit == null ? null : Number(r.per_customer_limit),
     totalLimit: r.total_limit == null ? null : Number(r.total_limit),
-    startsAt: maybeNum(r.starts_at),
-    expiresAt: maybeNum(r.expires_at),
+    startsAt: msOrNull(r.starts_at),
+    expiresAt: msOrNull(r.expires_at),
     active: r.active,
     channels: String(r.channels)
       .split(",")
@@ -113,7 +59,7 @@ function toCode(r: any): DiscountCode {
     note: r.note,
     createdByEmployeeId: r.created_by_employee_id ?? null,
     createdByName: r.created_by_name,
-    createdAt: Number(r.created_at),
+    createdAt: ms(r.created_at),
     timesUsed: r.times_used == null ? 0 : Number(r.times_used),
   };
 }
@@ -123,12 +69,14 @@ function toRedemption(r: any): DiscountRedemption {
     id: r.id,
     codeId: r.code_id ?? null,
     code: r.code,
-    phone: r.phone,
+    customerId: r.customer_id ?? null,
+    phone: r.customer_phone ?? "",
     customerName: r.customer_name,
-    invoice: r.invoice,
-    gross: num(r.gross),
-    discount: num(r.discount),
-    net: num(r.net),
+    invoiceId: r.invoice_id ?? null,
+    invoice: r.invoice_number ?? "",
+    gross: num(r.gross_inr),
+    discount: num(r.discount_inr),
+    net: num(r.net_inr),
     channel: r.channel as DiscountChannel,
     status: r.status,
     rzpOrderId: r.rzp_order_id,
@@ -136,7 +84,7 @@ function toRedemption(r: any): DiscountRedemption {
     appliedByEmployeeId: r.applied_by_employee_id ?? null,
     appliedByName: r.applied_by_name,
     reason: r.reason,
-    createdAt: Number(r.created_at),
+    createdAt: ms(r.created_at),
   };
 }
 
@@ -144,6 +92,14 @@ function toRedemption(r: any): DiscountRedemption {
 const USED_COUNT = `
   SELECT count(*) FROM discount_redemptions r
   WHERE r.code_id = c.id AND r.status <> 'released'
+`;
+
+const REDEMPTION_SELECT = `
+  SELECT r.*, cu.phone AS customer_phone,
+    COALESCE(i.number, r.metadata->>'invoice_number', '') AS invoice_number
+  FROM discount_redemptions r
+  LEFT JOIN customers cu ON cu.id = r.customer_id
+  LEFT JOIN invoices i ON i.id = r.invoice_id
 `;
 
 // ── Codes ────────────────────────────────────────────────────────────────────
@@ -205,8 +161,8 @@ export async function createCode(input: CreateCodeInput): Promise<DiscountCode> 
       `INSERT INTO discount_codes (
          id, code, kind, value, max_discount, min_order, usage,
          per_customer_limit, total_limit, starts_at, expires_at, active,
-         channels, note, created_by_employee_id, created_by_name, created_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,TRUE,$12,$13,$14,$15,$16)
+         channels, note, created_by_employee_id, created_by_name
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,${TS("$10")},${TS("$11")},TRUE,$12,$13,$14,$15)
        RETURNING *, 0 AS times_used`,
       [
         randomUUID(),
@@ -224,7 +180,6 @@ export async function createCode(input: CreateCodeInput): Promise<DiscountCode> 
         input.note,
         input.createdByEmployeeId,
         input.createdByName,
-        Date.now(),
       ]
     );
     return toCode(rows[0]);
@@ -243,7 +198,7 @@ export async function createCode(input: CreateCodeInput): Promise<DiscountCode> 
 export async function setCodeActive(id: string, active: boolean): Promise<DiscountCode | null> {
   await ensureSchema();
   const { rows } = await getPool().query(
-    `UPDATE discount_codes SET active = $2 WHERE id = $1
+    `UPDATE discount_codes SET active = $2, last_updated_at = now() WHERE id = $1
      RETURNING *, (SELECT count(*) FROM discount_redemptions r
                    WHERE r.code_id = discount_codes.id AND r.status <> 'released') AS times_used`,
     [id, active]
@@ -303,10 +258,13 @@ export async function evaluateCode(input: {
   return { code: found, amount: discountAmountFor(found, input.gross) };
 }
 
+/** Redemptions by this phone's customer — a number with no customer row has
+ *  redeemed nothing yet. */
 async function countRedemptionsByPhone(codeId: string, phone: string): Promise<number> {
   const { rows } = await getPool().query(
-    `SELECT count(*)::int AS n FROM discount_redemptions
-     WHERE code_id = $1 AND phone = $2 AND status <> 'released'`,
+    `SELECT count(*)::int AS n FROM discount_redemptions r
+     JOIN customers cu ON cu.id = r.customer_id
+     WHERE r.code_id = $1 AND cu.phone = $2 AND r.status <> 'released'`,
     [codeId, phone]
   );
   return rows[0]?.n ?? 0;
@@ -319,9 +277,9 @@ export interface RedeemInput {
   codeId: string | null;
   /** Display code; "MANUAL" for a one-off grant. */
   code: string;
+  /** Empty for a counter one-off where nobody asked the phone number. */
   phone: string;
   customerName: string;
-  invoice: string;
   gross: number;
   discount: number;
   net: number;
@@ -342,6 +300,18 @@ export interface RedeemInput {
  */
 export async function redeem(input: RedeemInput): Promise<DiscountRedemption> {
   await ensureSchema();
+
+  // Resolve (or create) the customer before taking the code lock — an upsert
+  // has no business inside it.
+  let customerId: string | null = null;
+  if (/^\d{10}$/.test(input.phone)) {
+    const { customer } = await upsertCustomer({
+      phone: input.phone,
+      name: input.customerName || "Customer",
+    });
+    customerId = customer.id;
+  }
+
   const client = await getPool().connect();
   try {
     await client.query("BEGIN");
@@ -360,10 +330,10 @@ export async function redeem(input: RedeemInput): Promise<DiscountRedemption> {
       const { rows: counts } = await client.query(
         `SELECT
            count(*)::int AS total,
-           count(*) FILTER (WHERE phone = $2)::int AS mine
+           count(*) FILTER (WHERE customer_id = $2 AND customer_id IS NOT NULL)::int AS mine
          FROM discount_redemptions
          WHERE code_id = $1 AND status <> 'released'`,
-        [input.codeId, input.phone]
+        [input.codeId, customerId]
       );
       const total = counts[0]?.total ?? 0;
       const mine = counts[0]?.mine ?? 0;
@@ -377,18 +347,17 @@ export async function redeem(input: RedeemInput): Promise<DiscountRedemption> {
 
     const { rows } = await client.query(
       `INSERT INTO discount_redemptions (
-         id, code_id, code, phone, customer_name, invoice, gross, discount, net,
-         channel, status, rzp_order_id, applied_by_employee_id, applied_by_name,
-         reason, created_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'applied',$11,$12,$13,$14,$15)
+         id, code_id, code, customer_id, customer_name, gross_inr, discount_inr,
+         net_inr, channel, status, rzp_order_id, applied_by_employee_id,
+         applied_by_name, reason
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'applied',$10,$11,$12,$13)
        RETURNING *`,
       [
         randomUUID(),
         input.codeId,
         input.code,
-        input.phone,
+        customerId,
         input.customerName,
-        input.invoice,
         input.gross,
         input.discount,
         input.net,
@@ -397,11 +366,10 @@ export async function redeem(input: RedeemInput): Promise<DiscountRedemption> {
         input.appliedByEmployeeId ?? null,
         input.appliedByName ?? "",
         input.reason ?? "",
-        Date.now(),
       ]
     );
     await client.query("COMMIT");
-    return toRedemption(rows[0]);
+    return toRedemption({ ...rows[0], customer_phone: input.phone, invoice_number: "" });
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     throw err;
@@ -411,17 +379,31 @@ export async function redeem(input: RedeemInput): Promise<DiscountRedemption> {
 }
 
 /**
- * Fill in the invoice number after the fact. The online flow redeems before it
- * knows the invoice number (the code has to be spent before the discounted
- * invoice can be built), so this closes the loop.
+ * Fill in the invoice after the fact. The online flow redeems before it knows
+ * the invoice (the code has to be spent before the discounted invoice can be
+ * built), so this closes the loop. `invoiceId` may be null when the invoice
+ * mirror write failed — the number still lands in metadata so the ledger reads.
  */
-export async function attachInvoice(redemptionId: string, invoice: string): Promise<void> {
+export async function attachInvoice(
+  redemptionId: string,
+  link: { invoiceId: string | null; invoiceNumber: string }
+): Promise<void> {
   await ensureSchema();
-  await getPool().query(`UPDATE discount_redemptions SET invoice = $2 WHERE id = $1`, [
-    redemptionId,
-    invoice,
-  ]);
+  await getPool().query(
+    `UPDATE discount_redemptions SET
+       invoice_id = COALESCE($2, invoice_id),
+       metadata = metadata || $3::jsonb,
+       last_updated_at = now()
+     WHERE id = $1`,
+    [redemptionId, link.invoiceId, JSON.stringify({ invoice_number: link.invoiceNumber })]
+  );
 }
+
+/** Redemptions tied to one invoice number, however the link was recorded. */
+const INVOICE_MATCH = `
+  (invoice_id = (SELECT id FROM invoices WHERE number = $1)
+   OR metadata->>'invoice_number' = $1)
+`;
 
 /**
  * Tie a discounted booking to the Razorpay payment that settled it, so a
@@ -436,8 +418,9 @@ export async function attachPayment(input: {
   await getPool().query(
     `UPDATE discount_redemptions SET
        rzp_order_id = COALESCE(NULLIF($2, ''), rzp_order_id),
-       rzp_payment_id = COALESCE(NULLIF($3, ''), rzp_payment_id)
-     WHERE invoice = $1 AND status <> 'released'`,
+       rzp_payment_id = COALESCE(NULLIF($3, ''), rzp_payment_id),
+       last_updated_at = now()
+     WHERE ${INVOICE_MATCH} AND status <> 'released'`,
     [input.invoice, input.rzpOrderId ?? "", input.rzpPaymentId ?? ""]
   );
 }
@@ -450,14 +433,26 @@ export async function attachPayment(input: {
  */
 export async function finalizeRedemption(
   id: string,
-  totals: { invoice: string; gross: number; discount: number; net: number }
+  totals: {
+    invoiceId: string | null;
+    invoiceNumber: string;
+    gross: number;
+    discount: number;
+    net: number;
+  }
 ): Promise<void> {
   await ensureSchema();
   await getPool().query(
-    `UPDATE discount_redemptions
-     SET invoice = $2, gross = $3, discount = $4, net = $5
+    `UPDATE discount_redemptions SET
+       invoice_id = COALESCE($2, invoice_id),
+       metadata = metadata || $3::jsonb,
+       gross_inr = $4, discount_inr = $5, net_inr = $6,
+       last_updated_at = now()
      WHERE id = $1`,
-    [id, totals.invoice, totals.gross, totals.discount, totals.net]
+    [
+      id, totals.invoiceId, JSON.stringify({ invoice_number: totals.invoiceNumber }),
+      totals.gross, totals.discount, totals.net,
+    ]
   );
 }
 
@@ -471,7 +466,7 @@ export async function attachPaymentByOrder(
 ): Promise<void> {
   await ensureSchema();
   await getPool().query(
-    `UPDATE discount_redemptions SET rzp_payment_id = $2
+    `UPDATE discount_redemptions SET rzp_payment_id = $2, last_updated_at = now()
      WHERE rzp_order_id = $1 AND status <> 'released'`,
     [rzpOrderId, rzpPaymentId]
   );
@@ -485,7 +480,10 @@ export async function attachPaymentByOrder(
  */
 export async function releaseRedemption(id: string): Promise<void> {
   await ensureSchema();
-  await getPool().query(`UPDATE discount_redemptions SET status = 'released' WHERE id = $1`, [id]);
+  await getPool().query(
+    `UPDATE discount_redemptions SET status = 'released', last_updated_at = now() WHERE id = $1`,
+    [id]
+  );
 }
 
 /**
@@ -495,8 +493,8 @@ export async function releaseRedemption(id: string): Promise<void> {
 export async function releaseForInvoice(invoice: string): Promise<number> {
   await ensureSchema();
   const { rowCount } = await getPool().query(
-    `UPDATE discount_redemptions SET status = 'released'
-     WHERE invoice = $1 AND status <> 'released'`,
+    `UPDATE discount_redemptions SET status = 'released', last_updated_at = now()
+     WHERE ${INVOICE_MATCH} AND status <> 'released'`,
     [invoice]
   );
   return rowCount ?? 0;
@@ -511,12 +509,12 @@ export async function listRedemptions(opts?: {
   let where = "";
   if (opts?.codeId) {
     params.push(opts.codeId);
-    where = `WHERE code_id = $${params.length}`;
+    where = `WHERE r.code_id = $${params.length}`;
   }
   params.push(opts?.limit ?? 200);
   const { rows } = await getPool().query(
-    `SELECT * FROM discount_redemptions ${where}
-     ORDER BY created_at DESC LIMIT $${params.length}`,
+    `${REDEMPTION_SELECT} ${where}
+     ORDER BY r.created_at DESC LIMIT $${params.length}`,
     params
   );
   return rows.map(toRedemption);
@@ -526,9 +524,10 @@ export async function listRedemptions(opts?: {
 export async function findByInvoice(invoice: string): Promise<DiscountRedemption | null> {
   await ensureSchema();
   const { rows } = await getPool().query(
-    `SELECT * FROM discount_redemptions
-     WHERE invoice = $1 AND status <> 'released'
-     ORDER BY created_at DESC LIMIT 1`,
+    `${REDEMPTION_SELECT}
+     WHERE ${INVOICE_MATCH.replaceAll("invoice_id", "r.invoice_id").replaceAll("metadata", "r.metadata")}
+       AND r.status <> 'released'
+     ORDER BY r.created_at DESC LIMIT 1`,
     [invoice]
   );
   return rows[0] ? toRedemption(rows[0]) : null;

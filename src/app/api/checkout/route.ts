@@ -4,7 +4,8 @@ import { applyDiscount, computeQuote, PACKAGES, type PackageId, type Quote } fro
 import { billing, type PaymentOrder } from "@/lib/billing";
 import { createPaymentOrder, gatewayEnabled } from "@/lib/razorpay";
 import { HEARD_FROM_SOURCES } from "@/lib/heardFrom";
-import { recordHeardFrom } from "@/lib/staff/db";
+import { setHeardFrom, upsertCustomer } from "@/lib/customers/db";
+import { mergeInvoiceMetadata, quoteMirrorLines, recordInvoice } from "@/lib/invoices/db";
 import { dbConfigured } from "@/lib/pg";
 import {
   attachInvoice,
@@ -79,7 +80,6 @@ export async function POST(req: Request) {
         code: code.code,
         phone: input.phone,
         customerName: input.name.trim(),
-        invoice: "",
         gross: discounted.gross,
         discount: discounted.discount?.amount ?? 0,
         net: discounted.total,
@@ -110,26 +110,54 @@ export async function POST(req: Request) {
       validationCode,
     });
 
+    // Mirror the invoice into our own ledger. Best-effort by contract: the
+    // booking lives in the billing backend and must never be lost to a
+    // Postgres hiccup — a missed mirror row costs history, not money.
+    let mirror: { invoiceId: string; customerId: string } | null = null;
+    if (dbConfigured()) {
+      mirror = await recordInvoice({
+        number: booking.invoiceNumber,
+        source: "app",
+        customer: {
+          phone: input.phone,
+          name: input.name,
+          kidNames: kidNames.join(", "),
+          swipeRef: booking.customerRef ?? null,
+        },
+        swipeRef: booking.docRef ?? null,
+        grossInr: quote.gross,
+        discountInr: quote.discount?.amount ?? 0,
+        netInr: quote.total,
+        lines: quoteMirrorLines(quote.lines),
+        metadata: { validation_code: validationCode },
+      }).catch((err) => {
+        console.error("invoice mirror failed:", err);
+        return null;
+      });
+    }
+
     // Close the loop on the redemption now that the invoice has a number.
     // Best-effort: the discount is already real (it's in the invoice prices),
     // so a failure here costs a ledger cross-reference, not the booking.
     if (redemptionId) {
       try {
-        await attachInvoice(redemptionId, booking.invoiceNumber);
+        await attachInvoice(redemptionId, {
+          invoiceId: mirror?.invoiceId ?? null,
+          invoiceNumber: booking.invoiceNumber,
+        });
       } catch (err) {
         console.error("failed to link redemption to invoice:", err);
       }
     }
 
     // The marketing answer is best-effort: losing it must never lose a booking.
-    if (input.heardFrom.length) {
+    // First answer wins, and the form only asks genuinely new customers.
+    if (input.heardFrom.length && dbConfigured()) {
       try {
-        await recordHeardFrom({
-          phone: input.phone,
-          name: input.name,
-          invoice: booking.invoiceNumber,
-          sources: [...input.heardFrom],
-        });
+        const customerId =
+          mirror?.customerId ??
+          (await upsertCustomer({ phone: input.phone, name: input.name })).customer.id;
+        await setHeardFrom(customerId, [...input.heardFrom]);
       } catch (err) {
         console.error("heard-from save failed:", err);
       }
@@ -150,6 +178,14 @@ export async function POST(req: Request) {
       } catch (err) {
         console.error("payment order creation failed (falling back to counter):", err);
       }
+    }
+
+    // Remember which order was created for this invoice — the verify path
+    // finds the mirror row by order id, since it only holds gateway handles.
+    if (payment && mirror) {
+      await mergeInvoiceMetadata(mirror.invoiceId, { rzp_order_id: payment.orderId }).catch(
+        (err) => console.error("failed to note razorpay order on invoice:", err)
+      );
     }
 
     // Remember which order settled this discount, once we know its id.

@@ -1,0 +1,49 @@
+# The database
+
+One Postgres (Neon via Vercel Marketplace; any `DATABASE_URL` works), one
+schema block: [`src/lib/db/schema.ts`](../src/lib/db/schema.ts). Every table is
+created idempotently on first use — installing the database is the only
+migration step. For the one-time cutover from the old per-module tables, run:
+
+```bash
+psql "$DATABASE_URL" -f scripts/db-reset.sql
+```
+
+## What lives where
+
+Swipe remains the books of record (GST, printed invoices). Postgres is **our**
+ledger — the thing that can answer "how often does this family visit", "how
+many sock pairs did we sell", "which code paid for itself" without scanning a
+third party's API.
+
+| Table | What it holds |
+| --- | --- |
+| `customers` | One row per family, keyed by phone. Kid names, plus the "how did you hear about us?" answer (asked once, on the first booking). |
+| `products` | Our catalogue rows, upserted lazily from code (`pricing.ts`, `members/plans.ts`) the first time each product is billed. |
+| `invoices` | Mirror of every invoice the app creates (`app` / `counter` / `membership_punch` / `external`), with totals, status, and the session lifecycle stamps (check-in/out, removal, cancellation). |
+| `invoice_items` | One row per billed line, referencing `products`. |
+| `payments` | One row per payment (counter + gateway), referencing `invoices`. |
+| `memberships`, `membership_visits` | Source of truth for passes and punches (Swipe's ₹0 punch invoices are receipts). |
+| `discount_codes`, `discount_redemptions` | Ledger of record for discounts — limits are enforced here, nowhere else. |
+| `employees`, `attendance`, `leave_requests`, `maintenance_issues`, `feedback` | The staff tools. |
+
+## Conventions
+
+- TEXT uuid primary keys; cross-table references are real foreign keys to OUR
+  ids — never phone numbers, never Swipe handles.
+- Instants are `TIMESTAMPTZ`; true calendar days (expiry, attendance) are
+  `DATE`, read back as `YYYY-MM-DD` strings (parser in `src/lib/pg.ts`). Wire
+  types still speak unix ms — mappers convert at the edge.
+- Every table has `last_updated_at` (set by application SQL: every `UPDATE`
+  includes `last_updated_at = now()`) and a `metadata JSONB` for future fields.
+- **Swipe handles live in exactly three columns**: `customers.swipe_ref`
+  (party id), `products.swipe_ref` (product id), `invoices.swipe_ref`
+  (document hash id). Replacing Swipe = a new `BillingProvider` adapter
+  (`src/lib/billing/`) + backfilling those columns. Nothing else changes.
+
+## Mirror-write contract
+
+Booking, payment and punch flows write Swipe first, then mirror here
+**best-effort**: a Postgres failure is logged and never fails the customer
+flow. The exceptions are the tables that are themselves the source of truth
+(memberships, discounts) — those fail loudly, as before.

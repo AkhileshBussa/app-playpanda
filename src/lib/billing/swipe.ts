@@ -555,7 +555,7 @@ async function createSwipeInvoice(
 async function createMembershipPunchInvoice(
   input: MembershipPunchInput,
   partyId: number | null
-): Promise<{ invoiceNumber: string }> {
+): Promise<{ invoiceNumber: string; docRef: string }> {
   const line: InvoiceLine = {
     sku: input.punch.sku,
     name: input.punch.name,
@@ -591,7 +591,11 @@ async function createMembershipPunchInvoice(
       documentCustomHeaders: [],
     })
   );
-  return { invoiceNumber: res.serial_number || initial.serialNumber };
+  return {
+    invoiceNumber: res.serial_number || initial.serialNumber,
+    // createDocWithRetry already rejected a response without a doc id.
+    docRef: String(res.new_hash_id || res.hash_id),
+  };
 }
 
 // ── Session monitor ──────────────────────────────────────────────────────────
@@ -1118,7 +1122,12 @@ export const swipeBilling: BillingProvider = {
     const customerId = await ensureCustomer(input.customer);
     const { invoiceNumber, docCount, hashId } = await createSwipeInvoice(input, customerId);
     const ref: SwipeRef = { serialNumber: invoiceNumber, docCount, partyId: customerId, hashId };
-    return { invoiceNumber, ref: JSON.stringify(ref) };
+    return {
+      invoiceNumber,
+      ref: JSON.stringify(ref),
+      docRef: hashId,
+      customerRef: customerId != null ? String(customerId) : null,
+    };
   },
 
   async getBookingByInvoiceNumber(invoiceNumber: string): Promise<BookingDetails | null> {
@@ -1320,9 +1329,12 @@ export const swipeBilling: BillingProvider = {
     return { cancelled: true, invoiceNumber: invoice.serialNumber };
   },
 
-  async createMembershipPunch(input: MembershipPunchInput): Promise<{ invoiceNumber: string }> {
+  async createMembershipPunch(
+    input: MembershipPunchInput
+  ): Promise<{ invoiceNumber: string; docRef?: string; customerRef?: string | null }> {
     const partyId = await ensureCustomer(input.customer);
-    return createMembershipPunchInvoice(input, partyId);
+    const created = await createMembershipPunchInvoice(input, partyId);
+    return { ...created, customerRef: partyId != null ? String(partyId) : null };
   },
 
   async listTodayMembershipSales(): Promise<MembershipSaleInvoice[]> {

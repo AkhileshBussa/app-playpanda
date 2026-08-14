@@ -8,6 +8,7 @@ import {
 } from "@/lib/razorpay";
 import { dbConfigured } from "@/lib/pg";
 import { attachPayment } from "@/lib/discounts/db";
+import { recordPaymentMirror } from "@/lib/invoices/db";
 
 export const dynamic = "force-dynamic";
 
@@ -72,9 +73,19 @@ export async function POST(req: Request) {
       method: methodLabel(payment?.method),
       transactionRef: paymentId,
     });
-    // Tie the payment to its redemption when the booking used a code. Never
-    // allowed to affect the response: Razorpay would retry a recorded payment.
+    // Ledger mirror + redemption cross-reference. Never allowed to affect the
+    // response: Razorpay would retry a recorded payment. The unique index on
+    // rzp_payment_id keeps the mirror idempotent against the browser confirm.
     if (dbConfigured()) {
+      await recordPaymentMirror({
+        invoiceNumber,
+        amountInr,
+        method: methodLabel(payment?.method),
+        transactionRef: paymentId,
+        rzpOrderId: String(event?.payload?.order?.entity?.id ?? payment?.order_id ?? ""),
+        rzpPaymentId: paymentId,
+        amountDueAfter: result.amountDue,
+      }).catch((err) => console.error("webhook payment mirror failed:", err));
       await attachPayment({ invoice: invoiceNumber, rzpPaymentId: paymentId }).catch((err) =>
         console.error("failed to link webhook payment to redemption:", err)
       );

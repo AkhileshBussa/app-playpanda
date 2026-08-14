@@ -4,6 +4,8 @@ import { isOpsAuthed } from "@/lib/ops/auth";
 import { billing } from "@/lib/billing";
 import { PAYMENT_METHODS } from "@/lib/billing/types";
 import { computeQuote, PACKAGES, type PackageId } from "@/lib/pricing";
+import { quoteMirrorLines, recordInvoice, recordPaymentMirror } from "@/lib/invoices/db";
+import { dbConfigured } from "@/lib/pg";
 
 export const dynamic = "force-dynamic";
 
@@ -74,6 +76,25 @@ export async function POST(req: Request) {
     );
   }
 
+  // Mirror into our own ledger — best-effort, the booking must never fail on it.
+  if (dbConfigured()) {
+    await recordInvoice({
+      number: booking.invoiceNumber,
+      source: "counter",
+      customer: {
+        phone: input.phone,
+        name: input.name,
+        kidNames: kidNames.join(", "),
+        swipeRef: booking.customerRef ?? null,
+      },
+      swipeRef: booking.docRef ?? null,
+      grossInr: quote.gross,
+      discountInr: 0,
+      netInr: quote.total,
+      lines: quoteMirrorLines(quote.lines),
+    }).catch((err) => console.error("counter invoice mirror failed:", err));
+  }
+
   // Payment is a second call, and it can fail on its own. The invoice exists
   // either way, so a failure here reports "booked but not recorded" rather than
   // losing the booking — the card's own Collect button is then the way in.
@@ -85,6 +106,15 @@ export async function POST(req: Request) {
         method: input.method!,
         transactionRef: input.transactionRef,
       });
+      if (dbConfigured()) {
+        await recordPaymentMirror({
+          invoiceNumber: booking.invoiceNumber,
+          amountInr: quote.total,
+          method: input.method!,
+          transactionRef: input.transactionRef,
+          amountDueAfter: 0,
+        }).catch((err) => console.error("counter payment mirror failed:", err));
+      }
     } catch (err) {
       console.error("counter booking payment failed:", err);
       return NextResponse.json(

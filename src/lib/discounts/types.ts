@@ -64,8 +64,14 @@ export interface DiscountRedemption {
   codeId: string | null;
   /** Denormalised so the ledger still reads right if a code is renamed. */
   code: string;
+  /** Our customers-table id; null for a counter one-off with no phone. */
+  customerId: string | null;
+  /** Joined from the customer row for display; '' when unknown. */
   phone: string;
   customerName: string;
+  /** Our invoices-table id; null until the invoice exists (or if its mirror
+   *  write failed — the number below still reads from metadata). */
+  invoiceId: string | null;
   /** Invoice the discount landed on, e.g. "INV-1742". */
   invoice: string;
   /** Booking value before the discount, ₹. */

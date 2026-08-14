@@ -4,7 +4,12 @@
  * one serverless instance holds one small pool rather than one per feature.
  */
 
-import { Pool } from "pg";
+import { Pool, types } from "pg";
+
+// DATE columns come back as plain "YYYY-MM-DD" strings, not JS Dates. The
+// app's calendar days are IST days; letting node-postgres parse them into a
+// Date at server-local midnight would shift them across timezones.
+types.setTypeParser(types.builtins.DATE, (v) => v);
 
 let pool: Pool | null = null;
 

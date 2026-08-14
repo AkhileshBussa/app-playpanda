@@ -3,6 +3,8 @@ import { z } from "zod";
 import { billing } from "@/lib/billing";
 import { isOpsAuthed } from "@/lib/ops/auth";
 import { setCheckin, clearCheckin } from "@/lib/ops/state";
+import { stampInvoiceSession } from "@/lib/invoices/db";
+import { dbConfigured } from "@/lib/pg";
 
 export const dynamic = "force-dynamic";
 
@@ -49,6 +51,12 @@ export async function POST(req: Request) {
 
     const checkinAt = Date.now();
     await setCheckin(input.id, checkinAt);
+    // Durable copy on the invoice mirror; Redis stays the day's fast path.
+    if (dbConfigured()) {
+      await stampInvoiceSession("checkin", input.id, checkinAt).catch((err) =>
+        console.error("check-in stamp failed:", err)
+      );
+    }
     return NextResponse.json({ ok: true, checkinAt });
   } catch (err) {
     console.error("check-in failed:", err);
@@ -72,6 +80,11 @@ export async function DELETE(req: Request) {
 
   try {
     await clearCheckin(id);
+    if (dbConfigured()) {
+      await stampInvoiceSession("checkin", id, null).catch((err) =>
+        console.error("check-in unstamp failed:", err)
+      );
+    }
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error("undo check-in failed:", err);
