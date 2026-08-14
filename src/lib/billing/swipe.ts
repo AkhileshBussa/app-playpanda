@@ -515,6 +515,10 @@ async function createSwipeInvoice(
 
   // The validation code lives ONLY in the document custom header. Notes just
   // carry the kids' names for the counter; reference is a plain label.
+  //
+  // No code (a booking made at the counter) means no header at all — the ops
+  // monitor reads the header's presence as "this session waits for check-in",
+  // so writing an empty one would leave a walk-in stuck at Waiting.
   const kids = input.customer.kidNames.filter(Boolean);
 
   const initial = await getNextInvoiceSerial();
@@ -529,9 +533,9 @@ async function createSwipeInvoice(
       partyId: customerId,
       notes: kids.length ? `Kids: ${kids.join(", ")}` : "",
       reference: "Play Panda booking",
-      documentCustomHeaders: [
-        { header_id: VALIDATION_CODE_HEADER.headerId, value: input.validationCode },
-      ],
+      documentCustomHeaders: input.validationCode
+        ? [{ header_id: VALIDATION_CODE_HEADER.headerId, value: input.validationCode }]
+        : [],
     })
   );
   return {

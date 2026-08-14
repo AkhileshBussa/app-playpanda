@@ -39,7 +39,7 @@ interface OpsSessionCardProps {
   onCheckout: (session: OpsSession, undo: boolean) => void;
   /** Take a no-show off today's board (the invoice is left alone). */
   onRemove?: (session: OpsSession, undo: boolean) => void;
-  /** Open the invoice's line items; omitted for sessions with no invoice. */
+  /** Open the invoice's line items. */
   onShowInvoice?: (session: OpsSession) => void;
   /** Take payment against this session's invoice. */
   onCollect?: (session: OpsSession) => void;
@@ -108,16 +108,15 @@ export default function OpsSessionCard({
   // the button rather than offering one that goes nowhere.
   const whatsappLink = timeUpWhatsappLink(session);
 
-  // Manual membership visits have no invoice behind them, so there's nothing
-  // for them to open.
-  const showInvoice = onShowInvoice && !session.isManual ? () => onShowInvoice(session) : null;
+  // Every card on the board has an invoice behind it now, membership punches
+  // included — so this is only null when the board didn't offer a handler.
+  const showInvoice = onShowInvoice ? () => onShowInvoice(session) : null;
 
   // Whether removing this booking will also cancel its invoice — the server
   // decides for real (and re-checks against Swipe), but the confirm has to say
   // which of the two things the next tap does. A `#` in the id means one invoice
   // covers several cards, and those are never cancelled from here.
   const cancelsInvoice =
-    !session.isManual &&
     !session.paid &&
     session.amountDue > 0 &&
     !session.id.includes("#");
@@ -197,7 +196,7 @@ export default function OpsSessionCard({
             and manual visits carry no bill, so they get neither. */}
         {(() => {
           const settled =
-            !session.isManual && !session.isMembership && session.paid && session.amountDue <= 0;
+            !session.isMembership && session.paid && session.amountDue <= 0;
           if (status === "checked_out" || (!session.isMembership && session.amountDue <= 0 && !settled))
             return null;
           return (
@@ -270,7 +269,7 @@ export default function OpsSessionCard({
 
       {/* Money owed is collectable from the card, whatever the play state —
           it's the same counter conversation as check-in. */}
-      {onCollect && !session.isManual && session.amountDue > 0 && status !== "checked_out" && (
+      {onCollect && session.amountDue > 0 && status !== "checked_out" && (
         <div className="mt-2 flex gap-1.5">
           <button
             onClick={() => onCollect(session)}

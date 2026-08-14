@@ -31,8 +31,16 @@ export interface InvoiceLine {
 export interface CreateBookingInput {
   customer: BookingCustomer;
   lines: InvoiceLine[];
-  /** Short code the customer shows and the counter validates against the invoice. */
-  validationCode: string;
+  /**
+   * Short code the customer shows and the counter validates against the invoice.
+   *
+   * Omitted for a booking made AT the counter: the code exists so staff can
+   * check a family in against a booking made elsewhere, and its presence on the
+   * invoice is exactly what tells the ops monitor to hold the session at
+   * "waiting" until someone validates it. A walk-in is already standing there,
+   * so it gets no code and its timer runs from the invoice.
+   */
+  validationCode?: string;
 }
 
 export interface Booking {
