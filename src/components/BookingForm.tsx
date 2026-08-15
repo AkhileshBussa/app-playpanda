@@ -15,6 +15,7 @@ import {
 } from "@/lib/pricing";
 import { HEARD_FROM_SOURCES } from "@/lib/heardFrom";
 import { CUSTOMER_CODES_ENABLED } from "@/lib/discounts/enabled";
+import { clearProfile, loadProfile, saveProfile } from "@/lib/profile";
 
 const inr = formatInr;
 
@@ -125,7 +126,24 @@ export default function BookingForm() {
   const [codeBusy, setCodeBusy] = useState(false);
   const [codeError, setCodeError] = useState<string | null>(null);
 
+  // The phone this device's saved profile was restored for — shows the
+  // "Not you?" escape hatch while it still matches what's in the field.
+  const [restoredPhone, setRestoredPhone] = useState<string | null>(null);
+
   const canSubmit = name.trim().length >= 2 && /^[6-9]\d{9}$/.test(phone);
+
+  // Returning families on their own phone: restore the details saved after
+  // their last booking, so scanning the QR lands on a filled-in form. The
+  // touched refs stay false on purpose — the server lookup below still runs
+  // and refreshes anything stale from the backend.
+  useEffect(() => {
+    const saved = loadProfile();
+    if (!saved) return;
+    setPhone(saved.phone);
+    if (saved.name) setName(saved.name);
+    if (saved.kidNames) setKidNames(saved.kidNames);
+    setRestoredPhone(saved.phone);
+  }, []);
 
   // Returning customers: on a valid phone, prefill name + kids' names from
   // Swipe (their Child N custom fields). Debounced, silent on failure, and
@@ -291,6 +309,10 @@ export default function BookingForm() {
         checkoutCache.current = { key: cacheKey, data: checkout };
       }
 
+      // Booked — remember this family on this device (their own phone, almost
+      // always), so the next visit's form comes prefilled.
+      saveProfile({ phone, name: name.trim(), kidNames });
+
       // Invoice created in Swipe. The confirmation screen is keyed by the
       // invoice number (without prefix) and fetches everything from the backend.
       const number = checkout.invoiceNumber.replace(/^\D+/, "");
@@ -431,6 +453,30 @@ export default function BookingForm() {
             <div className="mt-2 px-1 text-xs font-bold text-green">
               {welcomeBack ? `Welcome back, ${welcomeBack}! 🐼` : "Welcome back! 🐼"} We&apos;ve
               filled in your details.
+            </div>
+          )}
+          {/* Shown while the field still holds the phone we restored from this
+              device — a borrowed phone needs a one-tap way out. */}
+          {restoredPhone !== null && phone === restoredPhone && (
+            <div className="mt-2 px-1 text-xs font-bold text-ink/40">
+              Not you?{" "}
+              <button
+                type="button"
+                onClick={() => {
+                  clearProfile();
+                  setRestoredPhone(null);
+                  setPhone("");
+                  setName("");
+                  setKidNames("");
+                  setWelcomeBack(null);
+                  setAskHeardFrom(false);
+                  nameTouched.current = false;
+                  kidNamesTouched.current = false;
+                }}
+                className="underline decoration-2 underline-offset-2 text-coral"
+              >
+                Start fresh
+              </button>
             </div>
           )}
         </section>
