@@ -48,10 +48,17 @@ function authHeader(k: { keyId: string; secret: string }): string {
 }
 
 /** Create an order on our Razorpay account. `receipt` carries the invoice
- *  number so the webhook can find its way back to the Swipe invoice. */
+ *  number so the webhook can find its way back to the Swipe invoice.
+ *
+ *  Razorpay's own Offers feature is deliberately unused: its discounts key off
+ *  the payment instrument (this bank's netbanking, that card BIN), not off a
+ *  code the customer types, and it can't touch a pay-at-counter booking at all.
+ *  Our codes are priced before the order is created, so the gateway only ever
+ *  sees the net — the code itself rides along in the notes for reference. */
 export async function createPaymentOrder(
   amountInr: number,
-  invoiceNumber: string
+  invoiceNumber: string,
+  discount?: { code: string; amount: number } | null
 ): Promise<PaymentOrder> {
   const k = keys();
   if (!k) throw new Error("Razorpay not configured");
@@ -64,7 +71,14 @@ export async function createPaymentOrder(
       currency: "INR",
       receipt: invoiceNumber,
       payment_capture: 1,
-      notes: { source: "playpanda-booking", invoice: invoiceNumber },
+      notes: {
+        source: "playpanda-booking",
+        invoice: invoiceNumber,
+        // Razorpay notes are strings; only present when a code was used.
+        ...(discount
+          ? { discount_code: discount.code, discount_amount: String(discount.amount) }
+          : {}),
+      },
     }),
     cache: "no-store",
   });

@@ -99,6 +99,57 @@ export interface CollectPaymentInput {
   transactionRef?: string;
 }
 
+/**
+ * Discount an invoice that already exists — the family who asked at the counter
+ * after booking on the app. The amount is what comes off the CURRENT total.
+ */
+export interface ApplyInvoiceDiscountInput {
+  /** Human invoice number, e.g. "INV-1712". */
+  invoiceNumber: string;
+  /** ₹ to take off. Refused if it exceeds the invoice total. */
+  amount: number;
+  /** Code, or "MANUAL" for a one-off grant — written onto the invoice. */
+  label: string;
+  /** Employee who granted it, recorded on the invoice for the books. */
+  byName: string;
+  /** Free-text reason, on one-off grants. */
+  reason?: string;
+}
+
+/**
+ * Why an invoice couldn't be discounted. Like cancellation, this refuses rather
+ * than throws whenever money has already moved or the invoice isn't one we can
+ * safely rewrite — nobody should have to unpick a half-applied discount.
+ *
+ * `unsupported` covers an invoice carrying products outside the booking
+ * catalogue (a counter-built invoice, a membership punch): we can't re-price
+ * lines we don't know the tax treatment of, so we don't try.
+ */
+export type DiscountRefusalReason =
+  | "paid"
+  | "part-paid"
+  | "not-found"
+  | "too-large"
+  | "unsupported";
+
+export interface ApplyInvoiceDiscountResult {
+  applied: boolean;
+  /** Set when `applied` is false. */
+  refused?: DiscountRefusalReason;
+  /**
+   * The invoice the discount landed on. MAY DIFFER from the input when the
+   * provider can't rewrite a document in place — callers must use this value
+   * from here on rather than the number they passed in.
+   */
+  invoiceNumber?: string;
+  /** Total before the discount, ₹. */
+  gross?: number;
+  /** ₹ actually taken off (derived from the rewritten lines). */
+  discount?: number;
+  /** New invoice total, ₹. */
+  net?: number;
+}
+
 /** Ask to cancel the invoice behind a play session that never happened. */
 export interface CancelInvoiceInput {
   /** The ops session handle (same id the monitor and check-in state use). */
@@ -263,6 +314,17 @@ export interface BillingProvider {
    * Rejects more than the outstanding balance. Returns what's left owing.
    */
   collectPayment(input: CollectPaymentInput): Promise<PaymentResult>;
+
+  /**
+   * Discount an invoice that already exists, by re-pricing its lines. Used by
+   * the counter when a family asks for a discount after booking on the app.
+   *
+   * Refuses rather than throws whenever discounting would be wrong: anything
+   * collected against it, or lines this provider can't safely re-price.
+   * Implementations MUST re-check that against the provider rather than
+   * trusting the caller — the board that asks may be up to 30 seconds stale.
+   */
+  applyInvoiceDiscount(input: ApplyInvoiceDiscountInput): Promise<ApplyInvoiceDiscountResult>;
 
   /**
    * Cancel the invoice behind a session that never happened — a no-show cleared

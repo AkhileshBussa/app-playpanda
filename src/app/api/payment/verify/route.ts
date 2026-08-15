@@ -7,6 +7,8 @@ import {
   releasePaymentRecord,
   verifyCheckoutSignature,
 } from "@/lib/razorpay";
+import { dbConfigured } from "@/lib/pg";
+import { attachPaymentByOrder } from "@/lib/discounts/db";
 
 const verifySchema = z.object({
   ref: z.string().min(1),
@@ -57,6 +59,15 @@ export async function POST(req: Request) {
         await releasePaymentRecord(input.paymentId);
         throw err;
       }
+    }
+
+    // If this booking used a discount code, note which payment settled it.
+    // Best-effort by design: the money is in, and a missing cross-reference is
+    // never worth failing a payment confirmation over.
+    if (dbConfigured()) {
+      await attachPaymentByOrder(input.orderId, input.paymentId).catch((err) =>
+        console.error("failed to link payment to redemption:", err)
+      );
     }
     return NextResponse.json({ ok: true });
   } catch (err) {

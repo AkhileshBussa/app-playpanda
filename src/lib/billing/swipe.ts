@@ -10,8 +10,10 @@
  * BillingProvider and swap the export in ./index.ts — nothing else changes.
  */
 
-import { round2 } from "../pricing";
+import { EXTRA_ADULT, PACKAGES, SOCKS, round2 } from "../pricing";
 import type {
+  ApplyInvoiceDiscountInput,
+  ApplyInvoiceDiscountResult,
   Booking,
   BookingDetails,
   BillingProvider,
@@ -625,6 +627,12 @@ interface SessionItem {
 interface SessionInvoice {
   /** Swipe new_hash_id — the stable doc handle (matches pp-billing's ids). */
   id: string;
+  /**
+   * Swipe's NUMERIC document id. Only an edit needs it: posting a document back
+   * to v3/doc/create with this set updates it in place instead of creating a
+   * new one (verified live on INV-1886, 2026-08-12).
+   */
+  docId: number;
   serialNumber: string;
   bookedAt: number; // unix ms
   paid: boolean;
@@ -749,6 +757,107 @@ async function listTodayTransactions(): Promise<Array<Record<string, unknown>>> 
 }
 
 /**
+ * Tax treatment of every product the booking flow can put on an invoice, keyed
+ * by Swipe product id. Discounting re-prices lines, and re-pricing a line means
+ * knowing its GST slab — so an invoice carrying anything that isn't in here
+ * (counter-built lines, membership punches) is refused rather than guessed at.
+ */
+const CATALOG_TAX = new Map<string, { taxRatePercent: number; itemType: "Product" | "Service" }>([
+  ...PACKAGES.map(
+    (p) =>
+      [p.sku, { taxRatePercent: p.taxRatePercent, itemType: "Service" as const }] as [
+        string,
+        { taxRatePercent: number; itemType: "Product" | "Service" },
+      ]
+  ),
+  [EXTRA_ADULT.sku, { taxRatePercent: EXTRA_ADULT.taxRatePercent, itemType: "Service" }],
+  [SOCKS.child.sku, { taxRatePercent: SOCKS.child.taxRatePercent, itemType: "Product" }],
+  [SOCKS.adult.sku, { taxRatePercent: SOCKS.adult.taxRatePercent, itemType: "Product" }],
+]);
+
+/**
+ * Re-post an existing invoice with discounted line prices.
+ *
+ * Swipe has no discrete "edit" endpoint — a document is edited by POSTing the
+ * whole thing back to v3/doc/create with its NUMERIC document id set. That id is
+ * the only thing that distinguishes an edit from a create.
+ *
+ * Verified live on INV-1886 (2026-08-12): same serial, same new_hash_id, same
+ * numeric id, discounted line prices, updated notes, and the Validation Code
+ * document header preserved because we send it back. Two things learnt the hard
+ * way, both worth not re-discovering:
+ *
+ *  - Swipe validates the payload's SHAPE strictly. Adding `hash_id`,
+ *    `new_hash_id` or `is_edit` at the top level — all of which appear in its
+ *    own read payloads — gets the whole request rejected with
+ *    SCHEMA_VALIDATION_ERROR. Send the create payload, plus `id`, and nothing
+ *    else.
+ *  - Fields left out are LOST, not preserved: an edit is a full replacement.
+ *    That's why the validation code and the kid-name notes are re-sent here.
+ *
+ * The returned serial is still checked: if a future Swipe ever ignores `id` and
+ * mints a new document, the stray is deleted again and this reports failure —
+ * a refusal the counter can act on, never a duplicate left in the books.
+ */
+async function rewriteInvoiceDiscounted(opts: {
+  /** Swipe's numeric document id — what makes this an edit. */
+  docId: number;
+  docNumber: number;
+  serialNumber: string;
+  partyId: number | null;
+  notes: string;
+  validationCode: string | null;
+  lines: InvoiceLine[];
+}): Promise<{ total: number }> {
+  const items = opts.lines.map(toSwipeItem);
+  const totalAmount = round2(items.reduce((s, i) => s + i.total_amount, 0));
+  const netAmount = round2(items.reduce((s, i) => s + i.net_amount, 0));
+
+  const payload = {
+    ...buildInvoiceDoc({
+      docNumber: opts.docNumber,
+      serialNumber: opts.serialNumber,
+      items,
+      totalAmount,
+      taxAmount: round2(totalAmount - netAmount),
+      netAmount,
+      partyId: opts.partyId,
+      notes: opts.notes,
+      reference: "Play Panda booking",
+      documentCustomHeaders:
+        opts.validationCode != null
+          ? [{ header_id: VALIDATION_CODE_HEADER.headerId, value: opts.validationCode }]
+          : [],
+    }),
+    // The one field that turns a create into an edit. Nothing else: any extra
+    // identity key fails the payload's schema validation outright.
+    id: opts.docId,
+    skip_warning: true,
+  };
+
+  const res = await swipeCall<CreateResp>("v3/doc", "create", payload, { allowFailure: true });
+  if (res.success === false) {
+    console.error("Swipe discount edit failed:", JSON.stringify(res));
+    throw new Error(res.message || "Swipe rejected the discount edit");
+  }
+
+  // Came back under a different serial ⇒ Swipe created a second document rather
+  // than editing this one. Take it straight back out and report failure.
+  const serial = res.serial_number || res.new_serial_number || "";
+  if (serial && serial !== opts.serialNumber) {
+    const stray = res.new_hash_id || res.hash_id;
+    if (stray) {
+      await deleteSwipeDoc(stray, "Auto-removed: discount edit created a duplicate").catch((err) =>
+        console.error("failed to clean up duplicate invoice from discount edit:", err)
+      );
+    }
+    throw new Error("Swipe created a new invoice instead of editing it");
+  }
+
+  return { total: totalAmount };
+}
+
+/**
  * Delete a document in Swipe — the same call the Swipe web UI's delete makes.
  *
  * `notify_customer` is false by design. The UI defaults it to true, but this is
@@ -794,6 +903,7 @@ function normalizeSessionInvoice(
   const paid = String(inv.payment_status ?? "").toLowerCase() === "paid";
   return {
     id: String(inv.new_hash_id ?? inv.hash_id ?? fallbackId),
+    docId: Number(inv.id ?? 0),
     serialNumber: String(inv.serial_number ?? ""),
     bookedAt,
     paid,
@@ -1093,6 +1203,90 @@ export const swipeBilling: BillingProvider = {
     const after = await findTransactionBySerial(serial);
     const amountDue = after ? pendingFromRow(after.row) : Math.max(0, pending - input.amount);
     return { invoiceNumber: serial, amountDue, paid: amountDue <= 0 };
+  },
+
+  async applyInvoiceDiscount(
+    input: ApplyInvoiceDiscountInput
+  ): Promise<ApplyInvoiceDiscountResult> {
+    const found = await findTransactionBySerial(input.invoiceNumber);
+    if (!found?.row.new_hash_id) return { applied: false, refused: "not-found" };
+    const { serial, row } = found;
+    const hashId = String(row.new_hash_id);
+
+    // Re-read the document rather than trusting the board: the monitor polls
+    // every 30s, and in that window the money may already have been taken.
+    const invoice = await getSessionInvoice(hashId);
+    if (!invoice) return { applied: false, refused: "not-found" };
+    if (invoice.paid || invoice.amountDue <= 0) {
+      return { applied: false, refused: "paid", invoiceNumber: serial };
+    }
+    if (invoice.total > 0 && invoice.amountDue < invoice.total) {
+      // Part of it was collected at the old price. Re-pricing now would leave a
+      // payment that doesn't match its invoice — a person has to sort that out.
+      return { applied: false, refused: "part-paid", invoiceNumber: serial };
+    }
+
+    // Line totals rather than the header total, so a second discount comes off
+    // what the invoice says today rather than off the original catalogue price.
+    const gross = round2(invoice.items.reduce((sum, i) => sum + i.totalAmount, 0));
+    if (gross <= 0) return { applied: false, refused: "unsupported", invoiceNumber: serial };
+    if (input.amount > gross + 0.005) {
+      return { applied: false, refused: "too-large", invoiceNumber: serial, gross };
+    }
+
+    const ratio = (gross - input.amount) / gross;
+    const lines: InvoiceLine[] = [];
+    for (const item of invoice.items) {
+      const treatment = CATALOG_TAX.get(item.sku);
+      if (!treatment || item.quantity <= 0) {
+        return { applied: false, refused: "unsupported", invoiceNumber: serial };
+      }
+      lines.push({
+        sku: item.sku,
+        name: item.name,
+        itemType: treatment.itemType,
+        quantity: item.quantity,
+        taxRatePercent: treatment.taxRatePercent,
+        priceWithTax: round2((item.totalAmount / item.quantity) * ratio),
+      });
+    }
+
+    // The discount is spelled out in the invoice notes as well as being in the
+    // prices — whoever reads the books later needs to see that the lower total
+    // was a decision someone made, and who made it.
+    const kids = parseSessionKidNames(invoice.partyCustomFields, invoice.companyName);
+    const off = round2(gross - round2(lines.reduce((s, l) => s + l.priceWithTax * l.quantity, 0)));
+    const note = [
+      kids.length ? `Kids: ${kids.join(", ")}` : "",
+      `Discount ${input.label} −₹${off.toLocaleString("en-IN")}${
+        input.byName ? ` by ${input.byName}` : ""
+      }${input.reason ? ` (${input.reason})` : ""}`,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+
+    // No numeric id ⇒ nothing to edit in place, and a create would duplicate.
+    if (!invoice.docId) {
+      return { applied: false, refused: "unsupported", invoiceNumber: serial };
+    }
+
+    const { total } = await rewriteInvoiceDiscounted({
+      docId: invoice.docId,
+      docNumber: Number(row.doc_number ?? 0) || parseInt(serial.replace(/\D/g, ""), 10) || 0,
+      serialNumber: serial,
+      partyId: row.customer_id != null ? Number(row.customer_id) : null,
+      notes: note,
+      validationCode: invoice.validationCode,
+      lines,
+    });
+
+    return {
+      applied: true,
+      invoiceNumber: serial,
+      gross,
+      discount: round2(gross - total),
+      net: total,
+    };
   },
 
   async cancelSessionInvoice(input: CancelInvoiceInput): Promise<CancelInvoiceResult> {

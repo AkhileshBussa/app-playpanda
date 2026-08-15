@@ -3,10 +3,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
-import { computeQuote, EXTRA_ADULT, PACKAGES, SOCKS, type PackageId } from "@/lib/pricing";
+import {
+  applyDiscount,
+  computeQuote,
+  EXTRA_ADULT,
+  formatInr,
+  PACKAGES,
+  SOCKS,
+  type AppliedDiscount,
+  type PackageId,
+} from "@/lib/pricing";
 import { HEARD_FROM_SOURCES } from "@/lib/heardFrom";
+import { CUSTOMER_CODES_ENABLED } from "@/lib/discounts/enabled";
 
-const inr = (n: number) => `₹${n.toLocaleString("en-IN")}`;
+const inr = formatInr;
 
 // Kill switch for online payment: set NEXT_PUBLIC_PAYMENTS_ENABLED="false" to
 // fall back to book-now-pay-at-counter (e.g. if the gateway misbehaves).
@@ -107,6 +117,12 @@ export default function BookingForm() {
   // when the optional "how did you hear about us?" question appears.
   const [isNewCustomer, setIsNewCustomer] = useState(false);
   const [heardFrom, setHeardFrom] = useState<string[]>([]);
+  // Discount code. `applied` is what the SERVER priced — the client only ever
+  // re-displays it, and /api/checkout re-checks it before the invoice is made.
+  const [codeInput, setCodeInput] = useState("");
+  const [applied, setApplied] = useState<AppliedDiscount | null>(null);
+  const [codeBusy, setCodeBusy] = useState(false);
+  const [codeError, setCodeError] = useState<string | null>(null);
 
   const canSubmit = name.trim().length >= 2 && /^[6-9]\d{9}$/.test(phone);
 
@@ -163,10 +179,68 @@ export default function BookingForm() {
   // Distinguishes a tap from a scroll that starts on the button.
   const touchMoved = useRef(false);
 
-  const quote = useMemo(
+  const baseQuote = useMemo(
     () => computeQuote({ packageId, kids, extraAdults, childSocks, adultSocks }),
     [packageId, kids, extraAdults, childSocks, adultSocks]
   );
+  // Everything downstream — the sticky total, the breakdown, the pay button —
+  // reads this, so there's one number and it's always the one being charged.
+  const quote = useMemo(
+    () => (applied ? applyDiscount(baseQuote, applied) : baseQuote),
+    [baseQuote, applied]
+  );
+
+  /**
+   * Ask the server what a code is worth. Nothing is redeemed by this — it's the
+   * live preview, and the code is only spent when the booking is created.
+   */
+  const checkCode = async (raw: string, opts?: { silent?: boolean }) => {
+    const code = raw.trim().toUpperCase();
+    if (!code) return;
+    if (!/^[6-9]\d{9}$/.test(phone)) {
+      setCodeError("Enter your mobile number first");
+      return;
+    }
+    if (!opts?.silent) setCodeBusy(true);
+    try {
+      const res = await fetch("/api/discounts/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code,
+          phone,
+          packageId,
+          kids,
+          extraAdults,
+          childSocks,
+          adultSocks,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setApplied(null);
+        setCodeError(data.error || "That code isn't valid");
+        return;
+      }
+      setApplied({ code: data.code, amount: data.amount });
+      setCodeError(null);
+    } catch {
+      // Offline or the check failed — never block the booking over a code.
+      if (!opts?.silent) setCodeError("Couldn't check that code right now");
+    } finally {
+      setCodeBusy(false);
+    }
+  };
+
+  // A percentage is worth a different amount once the family adds a kid or a
+  // pair of socks, so an applied code is re-priced whenever the selection moves.
+  // Silent: this is a correction, not something the customer asked for.
+  const appliedCodeName = applied?.code;
+  useEffect(() => {
+    if (!appliedCodeName) return;
+    void checkCode(appliedCodeName, { silent: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appliedCodeName, baseQuote.total]);
 
   const pay = async (payOnline = true) => {
     // Button looks disabled until the form is valid but stays clickable, so a
@@ -197,6 +271,9 @@ export default function BookingForm() {
         adultSocks,
         kidNames: kidNames.split(",").map((n) => n.trim()).filter(Boolean),
         ...(isNewCustomer && heardFrom.length ? { heardFrom } : {}),
+        // The server re-checks and spends the code; the amount above is only
+        // ever what the customer was shown.
+        ...(applied ? { discountCode: applied.code } : {}),
       };
       // The key deliberately excludes payNow: whichever button was tapped, the
       // same selection must reuse the same invoice, never create a second one.
@@ -481,6 +558,83 @@ export default function BookingForm() {
             <Stepper value={adultSocks} min={0} max={30} onChange={setAdultSocks} />
           </div>
         </section>
+
+        {/* Discount code. Deliberately last and deliberately quiet: most
+            families don't have one, and a prominent empty code box makes
+            everyone else feel they're paying too much.
+            Behind NEXT_PUBLIC_DISCOUNT_CODES_ENABLED — the counter can still
+            discount an invoice on /ops while this is off. */}
+        {CUSTOMER_CODES_ENABLED && (
+        <section className="rounded-chunk bg-white p-4 shadow-chunk">
+          {applied ? (
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-base font-black text-green">
+                  {applied.code} applied 🎉
+                </div>
+                <div className="text-xs font-bold text-ink/50">
+                  {inr(applied.amount)} off your booking
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setApplied(null);
+                  setCodeInput("");
+                  setCodeError(null);
+                }}
+                className="shrink-0 rounded-full bg-cream px-3.5 py-2 text-sm font-black text-ink/60 transition-colors hover:bg-ink/10"
+              >
+                Remove
+              </button>
+            </div>
+          ) : (
+            <>
+              <label
+                htmlFor="discount-code"
+                className="text-base font-black text-ink"
+              >
+                Have a discount code?
+              </label>
+              <div className="mt-2 flex gap-2">
+                <input
+                  id="discount-code"
+                  type="text"
+                  value={codeInput}
+                  onChange={(e) => {
+                    setCodeInput(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 24));
+                    if (codeError) setCodeError(null);
+                  }}
+                  // Enter shouldn't submit anything — there's no form here, but
+                  // being explicit keeps it from ever booking by accident.
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void checkCode(codeInput);
+                    }
+                  }}
+                  placeholder="Enter code"
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  spellCheck={false}
+                  className="min-w-0 flex-1 rounded-2xl border-2 border-ink/10 bg-cream/60 px-4 py-3 text-base font-black tracking-wider text-ink outline-none placeholder:font-bold placeholder:tracking-normal placeholder:text-ink/30 focus:border-coral"
+                />
+                <button
+                  type="button"
+                  onClick={() => void checkCode(codeInput)}
+                  disabled={codeBusy || codeInput.trim().length === 0}
+                  className="shrink-0 rounded-full bg-ink px-5 text-sm font-black text-cream transition-all active:translate-y-[1px] disabled:opacity-30"
+                >
+                  {codeBusy ? "…" : "Apply"}
+                </button>
+              </div>
+              {codeError && (
+                <p className="mt-2 px-1 text-xs font-bold text-coral">{codeError}</p>
+              )}
+            </>
+          )}
+        </section>
+        )}
       </div>
 
       {/* Sticky pay bar */}
@@ -497,7 +651,10 @@ export default function BookingForm() {
         )}
         {showBreakdown && (
           <div className="mb-3 space-y-1.5 border-b border-dashed border-ink/10 pb-3">
-            {quote.lines.map((line) => (
+            {/* Line prices are shown BEFORE the discount, with the saving on its
+                own row — "₹699 each, ₹140 off" is what a family can check
+                against the price list, where silently cheaper lines aren't. */}
+            {baseQuote.lines.map((line) => (
               <div key={line.sku} className="flex justify-between text-sm font-bold text-ink/70">
                 <span>
                   {line.displayName} × {line.quantity}
@@ -505,6 +662,12 @@ export default function BookingForm() {
                 <span>{inr(line.lineTotal)}</span>
               </div>
             ))}
+            {quote.discount && (
+              <div className="flex justify-between text-sm font-black text-green">
+                <span>{quote.discount.code}</span>
+                <span>−{inr(quote.discount.amount)}</span>
+              </div>
+            )}
             <div className="pt-1 text-[11px] font-bold text-ink/40">Prices include GST</div>
           </div>
         )}
@@ -516,7 +679,14 @@ export default function BookingForm() {
           <div className="text-[11px] font-bold uppercase tracking-widest text-ink/50">
             Total {showBreakdown ? "▾" : "▴"}
           </div>
-          <div className="text-2xl font-black text-ink">{inr(quote.total)}</div>
+          <div className="flex items-baseline gap-2">
+            <div className="text-2xl font-black text-ink">{inr(quote.total)}</div>
+            {quote.discount && (
+              <div className="text-base font-black text-ink/35 line-through">
+                {inr(quote.gross)}
+              </div>
+            )}
+          </div>
         </button>
         {/* Two ways to book, weighted the same: paying now or at the counter is
             the family's call, not something the layout should decide for them. */}

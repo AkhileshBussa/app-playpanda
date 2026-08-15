@@ -43,6 +43,8 @@ interface OpsSessionCardProps {
   onShowInvoice?: (session: OpsSession) => void;
   /** Take payment against this session's invoice. */
   onCollect?: (session: OpsSession) => void;
+  /** Discount this session's invoice before collecting. */
+  onDiscount?: (session: OpsSession) => void;
 }
 
 export default function OpsSessionCard({
@@ -53,6 +55,7 @@ export default function OpsSessionCard({
   onRemove,
   onShowInvoice,
   onCollect,
+  onDiscount,
 }: OpsSessionCardProps) {
   const [now, setNow] = useState(Date.now());
   const status = computeOpsStatus(session, now);
@@ -268,12 +271,27 @@ export default function OpsSessionCard({
       {/* Money owed is collectable from the card, whatever the play state —
           it's the same counter conversation as check-in. */}
       {onCollect && !session.isManual && session.amountDue > 0 && status !== "checked_out" && (
-        <button
-          onClick={() => onCollect(session)}
-          className="mt-2 w-full rounded-full bg-green py-2 text-sm font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
-        >
-          Collect ₹{session.amountDue.toLocaleString("en-IN")}
-        </button>
+        <div className="mt-2 flex gap-1.5">
+          <button
+            onClick={() => onCollect(session)}
+            className="flex-1 rounded-full bg-green py-2 text-sm font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
+          >
+            Collect ₹{session.amountDue.toLocaleString("en-IN")}
+          </button>
+          {/* Sits beside Collect, not inside it: discounting is the conversation
+              that happens just BEFORE taking the money, and once anything has
+              been collected the invoice can't be re-priced at all. */}
+          {onDiscount && (
+            <button
+              onClick={() => onDiscount(session)}
+              title="Apply a discount"
+              aria-label="Apply a discount"
+              className="shrink-0 rounded-full bg-white px-3 py-2 text-sm font-black text-ink/60 shadow-btn transition-all hover:text-ink active:translate-y-0.5 active:shadow-btn-pressed"
+            >
+              % Off
+            </button>
+          )}
+        </div>
       )}
 
       {/* Actions */}

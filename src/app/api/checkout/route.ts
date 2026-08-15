@@ -1,10 +1,20 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { computeQuote, PACKAGES, type PackageId } from "@/lib/pricing";
+import { applyDiscount, computeQuote, PACKAGES, type PackageId, type Quote } from "@/lib/pricing";
 import { billing, type PaymentOrder } from "@/lib/billing";
 import { createPaymentOrder, gatewayEnabled } from "@/lib/razorpay";
 import { HEARD_FROM_SOURCES } from "@/lib/heardFrom";
 import { recordHeardFrom } from "@/lib/staff/db";
+import { dbConfigured } from "@/lib/pg";
+import {
+  attachInvoice,
+  attachPayment,
+  evaluateCode,
+  redeem,
+  releaseRedemption,
+} from "@/lib/discounts/db";
+import { DiscountError } from "@/lib/discounts/types";
+import { CUSTOMER_CODES_ENABLED } from "@/lib/discounts/enabled";
 
 const bookingSchema = z.object({
   name: z.string().trim().min(2, "Please enter your name").max(60),
@@ -19,6 +29,8 @@ const bookingSchema = z.object({
   payNow: z.boolean().optional(),
   /** "How did you hear about us?" — the form only offers it to new customers. */
   heardFrom: z.array(z.enum(HEARD_FROM_SOURCES)).max(HEARD_FROM_SOURCES.length).default([]),
+  /** Discount code the customer typed, if any. Re-checked here, never trusted. */
+  discountCode: z.string().trim().min(1).max(40).optional(),
 });
 
 export async function POST(req: Request) {
@@ -31,8 +43,61 @@ export async function POST(req: Request) {
   }
 
   // Price is always computed server-side; the client total is display-only.
-  const quote = computeQuote(input);
+  let quote: Quote = computeQuote(input);
   const kidNames = (input.kidNames ?? []).map((n) => n.trim()).filter(Boolean);
+
+  /**
+   * Spend the code BEFORE the invoice exists, and hand it back if the invoice
+   * write then fails. The other order would let a discounted invoice exist with
+   * nothing in the ledger to explain it, and an unexplained discount in the
+   * books is worse than a code that has to be given back.
+   *
+   * The customer's payment choice deliberately doesn't matter here: a family
+   * holding a code gets it whether they pay online or at the counter, so the
+   * invoice is created discounted either way.
+   */
+  let redemptionId: string | null = null;
+  if (input.discountCode) {
+    // The form hides the box when codes are off; this is the half that matters,
+    // since a hidden field is no protection against a hand-made request.
+    if (!CUSTOMER_CODES_ENABLED) {
+      return NextResponse.json({ error: "That code isn't valid" }, { status: 400 });
+    }
+    if (!dbConfigured()) {
+      return NextResponse.json({ error: "That code isn't valid" }, { status: 400 });
+    }
+    try {
+      const { code, amount } = await evaluateCode({
+        code: input.discountCode,
+        phone: input.phone,
+        gross: quote.total,
+        channel: "online",
+      });
+      const discounted = applyDiscount(quote, { code: code.code, amount });
+      const redemption = await redeem({
+        codeId: code.id,
+        code: code.code,
+        phone: input.phone,
+        customerName: input.name.trim(),
+        invoice: "",
+        gross: discounted.gross,
+        discount: discounted.discount?.amount ?? 0,
+        net: discounted.total,
+        channel: "online",
+      });
+      redemptionId = redemption.id;
+      quote = discounted;
+    } catch (err) {
+      if (err instanceof DiscountError) {
+        return NextResponse.json({ error: err.message }, { status: 400 });
+      }
+      console.error("discount redemption failed:", err);
+      return NextResponse.json(
+        { error: "We couldn't apply that code. Please try again or ask at the counter." },
+        { status: 502 }
+      );
+    }
+  }
 
   // 4-digit code the customer shows and the counter matches against the invoice.
   const validationCode = String(Math.floor(1000 + Math.random() * 9000));
@@ -44,6 +109,17 @@ export async function POST(req: Request) {
       lines: quote.lines,
       validationCode,
     });
+
+    // Close the loop on the redemption now that the invoice has a number.
+    // Best-effort: the discount is already real (it's in the invoice prices),
+    // so a failure here costs a ledger cross-reference, not the booking.
+    if (redemptionId) {
+      try {
+        await attachInvoice(redemptionId, booking.invoiceNumber);
+      } catch (err) {
+        console.error("failed to link redemption to invoice:", err);
+      }
+    }
 
     // The marketing answer is best-effort: losing it must never lose a booking.
     if (input.heardFrom.length) {
@@ -67,12 +143,23 @@ export async function POST(req: Request) {
     let payment: PaymentOrder | null = null;
     if (paymentsEnabled && input.payNow !== false && gatewayEnabled()) {
       try {
-        payment = await createPaymentOrder(quote.total, booking.invoiceNumber);
+        // The code rides along in the order notes so a discounted booking can
+        // be recognised from the Razorpay dashboard alone, without joining
+        // anything — the mapping the counter asked for, on the gateway side.
+        payment = await createPaymentOrder(quote.total, booking.invoiceNumber, quote.discount);
       } catch (err) {
         console.error("payment order creation failed (falling back to counter):", err);
       }
     }
 
+    // Remember which order settled this discount, once we know its id.
+    if (redemptionId && payment) {
+      try {
+        await attachPayment({ invoice: booking.invoiceNumber, rzpOrderId: payment.orderId });
+      } catch (err) {
+        console.error("failed to link redemption to razorpay order:", err);
+      }
+    }
 
     return NextResponse.json({
       skipPayment: payment == null,
@@ -81,9 +168,18 @@ export async function POST(req: Request) {
       ref: booking.ref,
       validationCode,
       total: quote.total,
+      gross: quote.gross,
+      discount: quote.discount ?? null,
     });
   } catch (err) {
     console.error("checkout failed:", err);
+    // The code was spent before the invoice was attempted — give it back, or a
+    // single-use code would be burnt by a booking that never got created.
+    if (redemptionId) {
+      await releaseRedemption(redemptionId).catch((e) =>
+        console.error("failed to release redemption after failed booking:", e)
+      );
+    }
     return NextResponse.json(
       { error: "We couldn't create your booking. Please try again or ask at the counter." },
       { status: 502 }
