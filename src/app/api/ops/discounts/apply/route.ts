@@ -12,6 +12,7 @@ import {
 } from "@/lib/discounts/db";
 import { DISCOUNT_KINDS, DiscountError } from "@/lib/discounts/types";
 import type { DiscountRefusalReason } from "@/lib/billing/types";
+import { applyDiscountMirror, findInvoiceIdByNumber } from "@/lib/invoices/db";
 
 export const dynamic = "force-dynamic";
 
@@ -134,7 +135,6 @@ export async function POST(req: Request) {
     code: label,
     phone: input.phone,
     customerName: input.customerName || booking.customerName,
-    invoice: booking.invoiceNumber,
     gross,
     discount: amount,
     net: Math.round((gross - amount) * 100) / 100,
@@ -166,12 +166,23 @@ export async function POST(req: Request) {
     }
 
     // Swipe's arithmetic wins — record what actually came off.
-    await finalizeRedemption(redemption.id, {
-      invoice: result.invoiceNumber ?? booking.invoiceNumber,
+    const invoiceNumber = result.invoiceNumber ?? booking.invoiceNumber;
+    const invoiceId = await findInvoiceIdByNumber(invoiceNumber).catch(() => null);
+    const totals = {
       gross: result.gross ?? gross,
       discount: result.discount ?? amount,
       net: result.net ?? gross - amount,
-    });
+    };
+    await finalizeRedemption(redemption.id, { invoiceId, invoiceNumber, ...totals });
+
+    // Re-price the invoice mirror too (nothing to do for un-mirrored invoices).
+    if (invoiceId) {
+      await applyDiscountMirror(invoiceId, {
+        grossInr: totals.gross,
+        discountInr: totals.discount,
+        netInr: totals.net,
+      }).catch((err) => console.error("discount mirror update failed:", err));
+    }
 
     return NextResponse.json({
       ok: true,

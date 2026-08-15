@@ -14,6 +14,7 @@ import {
 import { getPunchProduct } from "@/lib/members/plans";
 import { isWeekday, playsForKids } from "@/lib/members/types";
 import { mirrorVisit } from "@/lib/members/sheets";
+import { recordInvoice } from "@/lib/invoices/db";
 
 export const dynamic = "force-dynamic";
 
@@ -82,24 +83,26 @@ export async function POST(req: Request) {
     });
 
     let invoiceNumber = "";
+    let punch: Awaited<ReturnType<typeof billing.createMembershipPunch>>;
+    const taxRatePercent = getPunchProduct(membership.punchProductId)?.taxRatePercent ?? 18;
+    const kidNames = (input.kidNames || membership.kidNames)
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
     try {
-      const kidNames = (input.kidNames || membership.kidNames)
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      const res = await billing.createMembershipPunch({
+      punch = await billing.createMembershipPunch({
         customer: { name: membership.customerName, phone: membership.phone, kidNames },
         punch: {
           sku: String(membership.punchProductId),
           name: membership.punchProductName,
-          taxRatePercent: getPunchProduct(membership.punchProductId)?.taxRatePercent ?? 18,
+          taxRatePercent,
           quantity: playsUsed,
           hoursPerPlay: membership.hoursPerPlay,
           totalPlays: membership.totalPlays,
         },
         notes: `Membership visit — ${membership.planName}${kidNames.length ? ` · Kids: ${kidNames.join(", ")}` : ""}`,
       });
-      invoiceNumber = res.invoiceNumber;
+      invoiceNumber = punch.invoiceNumber;
     } catch (err) {
       // Swipe failed → give the plays back so nothing is silently consumed.
       console.error("punch invoice failed, rolling back visit:", err);
@@ -112,7 +115,44 @@ export async function POST(req: Request) {
       );
     }
 
-    await setVisitInvoice(visit.id, invoiceNumber).catch((err) => {
+    // Mirror the ₹0 punch invoice into our ledger — best-effort; the visit and
+    // the Swipe invoice both already stand.
+    const mirror = await recordInvoice({
+      number: invoiceNumber,
+      source: "membership_punch",
+      customer: {
+        phone: membership.phone,
+        name: membership.customerName,
+        kidNames: kidNames.join(", "),
+        swipeRef: punch.customerRef ?? null,
+      },
+      swipeRef: punch.docRef ?? null,
+      grossInr: 0,
+      discountInr: 0,
+      netInr: 0,
+      lines: [
+        {
+          sku: String(membership.punchProductId),
+          name: membership.punchProductName,
+          kind: "membership_punch",
+          itemType: "Service",
+          quantity: playsUsed,
+          unitPriceInr: 0,
+          taxRatePercent,
+          totalInr: 0,
+          listPriceInr: null,
+        },
+      ],
+      metadata: { membership_id: membership.id, visit_id: visit.id },
+    }).catch((err) => {
+      console.error("punch invoice mirror failed:", err);
+      return null;
+    });
+
+    await setVisitInvoice(visit.id, {
+      invoiceId: mirror?.invoiceId ?? null,
+      invoiceNumber,
+    }).catch((err) => {
       // Non-fatal: the visit stands, only the invoice back-reference is missing.
       console.error("failed to stamp punch invoice on visit:", err);
     });

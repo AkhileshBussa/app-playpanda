@@ -6,6 +6,8 @@
 
 export interface Membership {
   id: string;
+  /** Our customers-table id; phone/customerName below are joined for display. */
+  customerId: string;
   phone: string;
   customerName: string;
   /** Comma-separated kid names, informational. */
@@ -37,10 +39,10 @@ export interface Membership {
 export interface MembershipVisit {
   id: string;
   membershipId: string;
-  phone: string;
   kidsCount: number;
   playsUsed: number;
   kidNames: string;
+  /** IST day the plays were consumed — derived from visitedAt, not stored. */
   visitDate: string; // YYYY-MM-DD (IST)
   punchInvoiceNumber: string;
   visitedAt: number; // unix ms

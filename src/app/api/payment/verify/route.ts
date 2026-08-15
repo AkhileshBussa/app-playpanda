@@ -9,6 +9,7 @@ import {
 } from "@/lib/razorpay";
 import { dbConfigured } from "@/lib/pg";
 import { attachPaymentByOrder } from "@/lib/discounts/db";
+import { recordPaymentMirror } from "@/lib/invoices/db";
 
 const verifySchema = z.object({
   ref: z.string().min(1),
@@ -61,10 +62,18 @@ export async function POST(req: Request) {
       }
     }
 
-    // If this booking used a discount code, note which payment settled it.
-    // Best-effort by design: the money is in, and a missing cross-reference is
-    // never worth failing a payment confirmation over.
+    // Ledger mirror + discount cross-reference. Best-effort by design: the
+    // money is in, and neither is worth failing a payment confirmation over.
+    // The unique index on rzp_payment_id keeps this idempotent against the
+    // webhook racing the same payment.
     if (dbConfigured()) {
+      await recordPaymentMirror({
+        rzpOrderId: input.orderId,
+        amountInr: paid.amountInr,
+        method: paid.method,
+        transactionRef: input.paymentId,
+        rzpPaymentId: input.paymentId,
+      }).catch((err) => console.error("online payment mirror failed:", err));
       await attachPaymentByOrder(input.orderId, input.paymentId).catch((err) =>
         console.error("failed to link payment to redemption:", err)
       );

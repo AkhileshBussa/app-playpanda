@@ -15,6 +15,7 @@ import {
 } from "@/lib/pricing";
 import { HEARD_FROM_SOURCES } from "@/lib/heardFrom";
 import { CUSTOMER_CODES_ENABLED } from "@/lib/discounts/enabled";
+import { clearProfile, loadProfile, saveProfile } from "@/lib/profile";
 
 const inr = formatInr;
 
@@ -113,9 +114,10 @@ export default function BookingForm() {
   const [error, setError] = useState<string | null>(null);
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [welcomeBack, setWelcomeBack] = useState<string | null>(null);
-  // True only once the lookup has confirmed the phone is new to us — that's
-  // when the optional "how did you hear about us?" question appears.
-  const [isNewCustomer, setIsNewCustomer] = useState(false);
+  // True only once the lookup has said to ask — a genuinely new family that
+  // hasn't answered "how did you hear about us?" before. The server decides
+  // (it can see both the billing backend and our customer records).
+  const [askHeardFrom, setAskHeardFrom] = useState(false);
   const [heardFrom, setHeardFrom] = useState<string[]>([]);
   // Discount code. `applied` is what the SERVER priced — the client only ever
   // re-displays it, and /api/checkout re-checks it before the invoice is made.
@@ -124,7 +126,24 @@ export default function BookingForm() {
   const [codeBusy, setCodeBusy] = useState(false);
   const [codeError, setCodeError] = useState<string | null>(null);
 
+  // The phone this device's saved profile was restored for — shows the
+  // "Not you?" escape hatch while it still matches what's in the field.
+  const [restoredPhone, setRestoredPhone] = useState<string | null>(null);
+
   const canSubmit = name.trim().length >= 2 && /^[6-9]\d{9}$/.test(phone);
+
+  // Returning families on their own phone: restore the details saved after
+  // their last booking, so scanning the QR lands on a filled-in form. The
+  // touched refs stay false on purpose — the server lookup below still runs
+  // and refreshes anything stale from the backend.
+  useEffect(() => {
+    const saved = loadProfile();
+    if (!saved) return;
+    setPhone(saved.phone);
+    if (saved.name) setName(saved.name);
+    if (saved.kidNames) setKidNames(saved.kidNames);
+    setRestoredPhone(saved.phone);
+  }, []);
 
   // Returning customers: on a valid phone, prefill name + kids' names from
   // Swipe (their Child N custom fields). Debounced, silent on failure, and
@@ -132,7 +151,7 @@ export default function BookingForm() {
   useEffect(() => {
     if (!/^[6-9]\d{9}$/.test(phone)) {
       setWelcomeBack(null);
-      setIsNewCustomer(false);
+      setAskHeardFrom(false);
       return;
     }
     let cancelled = false;
@@ -141,14 +160,12 @@ export default function BookingForm() {
         const res = await fetch(`/api/customer/lookup?phone=${phone}`);
         const data = await res.json();
         if (cancelled) return;
+        setAskHeardFrom(Boolean(data.askHeardFrom));
         if (!data.found) {
-          // First visit — this is the one moment to ask how they found us.
           // Clear any welcome-back note left by a previously typed number.
-          setIsNewCustomer(true);
           setWelcomeBack(null);
           return;
         }
-        setIsNewCustomer(false);
         setWelcomeBack(typeof data.name === "string" ? data.name : "");
         if (!nameTouched.current && data.name) setName(data.name);
         if (!kidNamesTouched.current && Array.isArray(data.kidNames) && data.kidNames.length) {
@@ -270,7 +287,7 @@ export default function BookingForm() {
         childSocks,
         adultSocks,
         kidNames: kidNames.split(",").map((n) => n.trim()).filter(Boolean),
-        ...(isNewCustomer && heardFrom.length ? { heardFrom } : {}),
+        ...(askHeardFrom && heardFrom.length ? { heardFrom } : {}),
         // The server re-checks and spends the code; the amount above is only
         // ever what the customer was shown.
         ...(applied ? { discountCode: applied.code } : {}),
@@ -292,6 +309,10 @@ export default function BookingForm() {
         checkoutCache.current = { key: cacheKey, data: checkout };
       }
 
+      // Booked — remember this family on this device (their own phone, almost
+      // always), so the next visit's form comes prefilled.
+      saveProfile({ phone, name: name.trim(), kidNames });
+
       // Invoice created in Swipe. The confirmation screen is keyed by the
       // invoice number (without prefix) and fetches everything from the backend.
       const number = checkout.invoiceNumber.replace(/^\D+/, "");
@@ -303,8 +324,10 @@ export default function BookingForm() {
         return;
       }
 
-      // Online payment: the booking is already saved, so every failure path
-      // from here lands on the confirmation screen (unpaid → pay at counter).
+      // Online payment: the booking is already saved. GATEWAY failures (script
+      // blocked, no order) still land on the confirmation screen — the
+      // customer chose to pay and we couldn't offer it. A deliberate cancel is
+      // different; see ondismiss below.
       if (!(await loadRazorpay()) || !window.Razorpay) {
         goSuccess();
         return;
@@ -345,8 +368,18 @@ export default function BookingForm() {
           goSuccess();
         },
         modal: {
-          // Closed without paying — still booked; pay at the counter.
-          ondismiss: goSuccess,
+          // Closed without paying — a choice, not a confirmation. Back to the
+          // form with both buttons live: the invoice is already created and
+          // cached, so either button reuses it rather than double-booking.
+          // Silently confirming here would tell the family "booked, pay at
+          // the counter" when they may have been backing out entirely.
+          ondismiss: () => {
+            payInFlight.current = false;
+            setStatus("idle");
+            setError(
+              "Payment cancelled — nothing was charged. Try again, or pick Pay at counter."
+            );
+          },
         },
       }).open();
     } catch (err) {
@@ -422,11 +455,36 @@ export default function BookingForm() {
               filled in your details.
             </div>
           )}
+          {/* Shown while the field still holds the phone we restored from this
+              device — a borrowed phone needs a one-tap way out. */}
+          {restoredPhone !== null && phone === restoredPhone && (
+            <div className="mt-2 px-1 text-xs font-bold text-ink/40">
+              Not you?{" "}
+              <button
+                type="button"
+                onClick={() => {
+                  clearProfile();
+                  setRestoredPhone(null);
+                  setPhone("");
+                  setName("");
+                  setKidNames("");
+                  setWelcomeBack(null);
+                  setAskHeardFrom(false);
+                  nameTouched.current = false;
+                  kidNamesTouched.current = false;
+                }}
+                className="underline decoration-2 underline-offset-2 text-coral"
+              >
+                Start fresh
+              </button>
+            </div>
+          )}
         </section>
 
         {/* First visit only: one optional tap that tells us which marketing
-            actually works. Returning families never see it. */}
-        {isNewCustomer && (
+            actually works. Returning families — and anyone who has already
+            answered once — never see it. */}
+        {askHeardFrom && (
           <section className="rounded-chunk bg-white p-4 shadow-chunk">
             <div className="text-base font-black text-ink">How did you hear about us?</div>
             <div className="text-xs font-bold text-ink/50">Optional — tap any that apply</div>

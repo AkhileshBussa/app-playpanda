@@ -31,8 +31,16 @@ export interface InvoiceLine {
 export interface CreateBookingInput {
   customer: BookingCustomer;
   lines: InvoiceLine[];
-  /** Short code the customer shows and the counter validates against the invoice. */
-  validationCode: string;
+  /**
+   * Short code the customer shows and the counter validates against the invoice.
+   *
+   * Omitted for a booking made AT the counter: the code exists so staff can
+   * check a family in against a booking made elsewhere, and its presence on the
+   * invoice is exactly what tells the ops monitor to hold the session at
+   * "waiting" until someone validates it. A walk-in is already standing there,
+   * so it gets no code and its timer runs from the invoice.
+   */
+  validationCode?: string;
 }
 
 export interface Booking {
@@ -43,6 +51,14 @@ export interface Booking {
    * client and into recordPayment(); callers must treat it as an opaque token.
    */
   ref: string;
+  /**
+   * The provider's stable document handle (Swipe: new_hash_id — the same value
+   * the ops board uses as session id). Stored as the invoice mirror's single
+   * provider reference; not for calling the provider with.
+   */
+  docRef?: string;
+  /** The provider's customer handle (Swipe: party id), when known. */
+  customerRef?: string | null;
 }
 
 export interface RecordPaymentInput {
@@ -343,8 +359,11 @@ export interface BillingProvider {
   /**
    * Punch one membership visit: upsert the customer and create the ₹0 invoice
    * with the punch product. Shows up on the ops monitor as a membership session.
+   * docRef/customerRef carry the same mirror handles as createBooking.
    */
-  createMembershipPunch(input: MembershipPunchInput): Promise<{ invoiceNumber: string }>;
+  createMembershipPunch(
+    input: MembershipPunchInput
+  ): Promise<{ invoiceNumber: string; docRef?: string; customerRef?: string | null }>;
 
   /**
    * Today's invoices carrying a membership-plan (sale) line, newest first —
