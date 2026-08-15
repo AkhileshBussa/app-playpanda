@@ -18,7 +18,7 @@
 
 import { randomUUID } from "node:crypto";
 import { getPool } from "../pg";
-import { ensureSchema } from "../db/schema";
+import { appEnvironment, ensureSchema } from "../db/schema";
 import { upsertCustomer, type UpsertCustomerInput } from "../customers/db";
 import { ensureProduct, type ProductKind } from "../products/db";
 
@@ -55,8 +55,10 @@ export interface RecordInvoiceInput {
 
 /**
  * Write one invoice with its customer, products and lines. Idempotent on the
- * invoice number: replaying a request that already landed returns the
- * existing row untouched.
+ * provider doc hash (swipe_ref): replaying a request that already landed
+ * returns the existing row untouched. NOT on the number — Swipe reissues a
+ * serial after the document holding it is deleted, so two different invoices
+ * can legitimately carry the same number over time.
  */
 export async function recordInvoice(
   input: RecordInvoiceInput
@@ -88,23 +90,24 @@ export async function recordInvoice(
     const { rows } = await client.query(
       `INSERT INTO invoices (
          id, number, customer_id, source, status, gross_inr, discount_inr,
-         net_inr, swipe_ref, metadata
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       ON CONFLICT (number) DO NOTHING
+         net_inr, environment, swipe_ref, metadata
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       ON CONFLICT (swipe_ref) WHERE swipe_ref IS NOT NULL DO NOTHING
        RETURNING id`,
       [
         randomUUID(), input.number, customer.id, input.source,
         input.netInr <= 0 ? "paid" : "unpaid",
         input.grossInr, input.discountInr, input.netInr,
-        input.swipeRef, JSON.stringify(input.metadata ?? {}),
+        appEnvironment(), input.swipeRef, JSON.stringify(input.metadata ?? {}),
       ]
     );
 
     const invoiceId = rows[0]?.id as string | undefined;
     if (!invoiceId) {
-      // Already mirrored (a replay) — leave the existing row and lines alone.
-      const existing = await client.query(`SELECT id FROM invoices WHERE number = $1`, [
-        input.number,
+      // Already mirrored (a replay of the same provider doc) — leave the
+      // existing row and lines alone.
+      const existing = await client.query(`SELECT id FROM invoices WHERE swipe_ref = $1`, [
+        input.swipeRef,
       ]);
       await client.query("COMMIT");
       return { invoiceId: existing.rows[0].id, customerId: customer.id };
@@ -143,23 +146,33 @@ export async function ensureExternalInvoice(input: {
 }): Promise<string> {
   await ensureSchema();
   const { customer } = await upsertCustomer(input.customer);
+  // Numbers aren't unique over time (see recordInvoice), so this is a plain
+  // find-else-create. The flow is a manager linking one sale — no write race.
+  const existing = await findInvoiceIdByNumber(input.number);
+  if (existing) return existing;
   const { rows } = await getPool().query(
     `INSERT INTO invoices (
-       id, number, customer_id, source, gross_inr, net_inr, issued_at, metadata
-     ) VALUES ($1,$2,$3,'external',$4,$4,COALESCE(to_timestamp($5::double precision / 1000.0), now()),$6)
-     ON CONFLICT (number) DO UPDATE SET last_updated_at = invoices.last_updated_at
+       id, number, customer_id, source, gross_inr, net_inr, issued_at, environment, metadata
+     ) VALUES ($1,$2,$3,'external',$4,$4,COALESCE(to_timestamp($5::double precision / 1000.0), now()),$6,$7)
      RETURNING id`,
     [
       randomUUID(), input.number, customer.id, input.totalInr ?? 0,
-      input.issuedAt ?? null, JSON.stringify(input.metadata ?? {}),
+      input.issuedAt ?? null, appEnvironment(), JSON.stringify(input.metadata ?? {}),
     ]
   );
   return rows[0].id as string;
 }
 
+/** The row a human means by that number today: this environment's newest
+ *  live one (a cancelled row only matches when no live row carries the
+ *  number, and another environment's rows never match at all). */
 export async function findInvoiceIdByNumber(number: string): Promise<string | null> {
   await ensureSchema();
-  const { rows } = await getPool().query(`SELECT id FROM invoices WHERE number = $1`, [number]);
+  const { rows } = await getPool().query(
+    `SELECT id FROM invoices WHERE number = $1 AND environment = $2
+     ORDER BY (status = 'cancelled')::int, issued_at DESC LIMIT 1`,
+    [number, appEnvironment()]
+  );
   return rows[0]?.id ?? null;
 }
 
@@ -204,9 +217,14 @@ export async function recordPaymentMirror(input: RecordPaymentMirrorInput): Prom
 
     let invoiceId = input.invoiceId ?? null;
     if (!invoiceId && input.invoiceNumber) {
-      const r = await client.query(`SELECT id FROM invoices WHERE number = $1`, [
-        input.invoiceNumber,
-      ]);
+      // Serial reuse: a payment addressed by number belongs to THIS
+      // environment's newest live invoice wearing it — never a cancelled
+      // predecessor, never another environment's test row.
+      const r = await client.query(
+        `SELECT id FROM invoices WHERE number = $1 AND environment = $2
+         ORDER BY (status = 'cancelled')::int, issued_at DESC LIMIT 1`,
+        [input.invoiceNumber, appEnvironment()]
+      );
       invoiceId = r.rows[0]?.id ?? null;
     }
     if (!invoiceId && input.rzpOrderId) {
@@ -304,9 +322,13 @@ export async function markInvoiceCancelled(number: string): Promise<string | nul
   await ensureSchema();
   const { rows } = await getPool().query(
     `UPDATE invoices SET status = 'cancelled', cancelled_at = now(), last_updated_at = now()
-     WHERE number = $1
+     WHERE id = (
+       SELECT id FROM invoices
+       WHERE number = $1 AND environment = $2 AND status <> 'cancelled'
+       ORDER BY issued_at DESC LIMIT 1
+     )
      RETURNING id`,
-    [number]
+    [number, appEnvironment()]
   );
   return rows[0]?.id ?? null;
 }

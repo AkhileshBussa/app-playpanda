@@ -22,7 +22,7 @@
 
 import { randomUUID } from "node:crypto";
 import { getPool } from "../pg";
-import { ensureSchema, ms, msOrNull, TS } from "../db/schema";
+import { appEnvironment, ensureSchema, ms, msOrNull, TS } from "../db/schema";
 import { upsertCustomer } from "../customers/db";
 import {
   DiscountError,
@@ -399,10 +399,17 @@ export async function attachInvoice(
   );
 }
 
-/** Redemptions tied to one invoice number, however the link was recorded. */
-const INVOICE_MATCH = `
-  (invoice_id = (SELECT id FROM invoices WHERE number = $1)
-   OR metadata->>'invoice_number' = $1)
+/**
+ * Redemptions tied to one invoice number, however the link was recorded.
+ * IN, not =: Swipe reissues serials after deletions, so several rows can wear
+ * one number; scoped to this environment so a local test serial can't touch a
+ * prod redemption. appEnvironment() is a process constant from a fixed set —
+ * inlining it keeps the fragment single-parameter for its callers.
+ */
+const invoiceMatch = (col = "invoice_id", meta = "metadata") => `
+  (${col} IN (SELECT id FROM invoices
+              WHERE number = $1 AND environment = '${appEnvironment()}')
+   OR ${meta}->>'invoice_number' = $1)
 `;
 
 /**
@@ -420,7 +427,7 @@ export async function attachPayment(input: {
        rzp_order_id = COALESCE(NULLIF($2, ''), rzp_order_id),
        rzp_payment_id = COALESCE(NULLIF($3, ''), rzp_payment_id),
        last_updated_at = now()
-     WHERE ${INVOICE_MATCH} AND status <> 'released'`,
+     WHERE ${invoiceMatch()} AND status <> 'released'`,
     [input.invoice, input.rzpOrderId ?? "", input.rzpPaymentId ?? ""]
   );
 }
@@ -494,7 +501,7 @@ export async function releaseForInvoice(invoice: string): Promise<number> {
   await ensureSchema();
   const { rowCount } = await getPool().query(
     `UPDATE discount_redemptions SET status = 'released', last_updated_at = now()
-     WHERE ${INVOICE_MATCH} AND status <> 'released'`,
+     WHERE ${invoiceMatch()} AND status <> 'released'`,
     [invoice]
   );
   return rowCount ?? 0;
@@ -525,7 +532,7 @@ export async function findByInvoice(invoice: string): Promise<DiscountRedemption
   await ensureSchema();
   const { rows } = await getPool().query(
     `${REDEMPTION_SELECT}
-     WHERE ${INVOICE_MATCH.replaceAll("invoice_id", "r.invoice_id").replaceAll("metadata", "r.metadata")}
+     WHERE ${invoiceMatch("r.invoice_id", "r.metadata")}
        AND r.status <> 'released'
      ORDER BY r.created_at DESC LIMIT 1`,
     [invoice]

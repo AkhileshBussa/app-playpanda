@@ -20,7 +20,7 @@ third party's API.
 | --- | --- |
 | `customers` | One row per family, keyed by phone. Kid names, plus the "how did you hear about us?" answer (asked once, on the first booking). |
 | `products` | Our catalogue rows, upserted lazily from code (`pricing.ts`, `members/plans.ts`) the first time each product is billed. |
-| `invoices` | Mirror of every invoice the app creates (`app` / `counter` / `membership_punch` / `external`), with totals, status, and the session lifecycle stamps (check-in/out, removal, cancellation). |
+| `invoices` | Mirror of every invoice the app creates (`app` / `counter` / `membership_punch` / `external`), with totals, status, the session lifecycle stamps (check-in/out, removal, cancellation), and the `environment` that wrote it (`prod` / `preview` / `dev` / `local`) so test rows never mix into prod analysis. |
 | `invoice_items` | One row per billed line, referencing `products`. |
 | `payments` | One row per payment (counter + gateway), referencing `invoices`. |
 | `memberships`, `membership_visits` | Source of truth for passes and punches (Swipe's ₹0 punch invoices are receipts). |
@@ -40,6 +40,11 @@ third party's API.
   (party id), `products.swipe_ref` (product id), `invoices.swipe_ref`
   (document hash id). Replacing Swipe = a new `BillingProvider` adapter
   (`src/lib/billing/`) + backfilling those columns. Nothing else changes.
+- **Invoice numbers are not unique over time.** Swipe reissues a serial after
+  the document holding it is deleted (observed live: INV-1913, 2026-08-15),
+  so `invoices.number` is a plain indexed column and identity rides on
+  `swipe_ref` (unique). Number-based lookups resolve to the current
+  environment's newest non-cancelled row.
 
 ## Mirror-write contract
 

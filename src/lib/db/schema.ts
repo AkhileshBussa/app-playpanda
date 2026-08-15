@@ -65,9 +65,14 @@ export const ensureSchema = onceSchema(`
   -- record for GST; this is our own ledger and history). The session lifecycle
   -- stamps (check-in/out, removal) live here too — an invoice is 1:1 with a
   -- board session, and Redis only keeps the day's fast path.
+  -- number is deliberately NOT unique: Swipe reissues a serial after the
+  -- document holding it is deleted (seen live with INV-1913, 2026-08-15), so
+  -- two different invoices can wear the same number over time. The doc hash
+  -- (swipe_ref) is the identity; number-based lookups prefer the newest
+  -- non-cancelled row.
   CREATE TABLE IF NOT EXISTS invoices (
     id TEXT PRIMARY KEY,
-    number TEXT NOT NULL UNIQUE,
+    number TEXT NOT NULL,
     customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL,
     source TEXT NOT NULL DEFAULT 'app',
     status TEXT NOT NULL DEFAULT 'unpaid',
@@ -80,6 +85,7 @@ export const ensureSchema = onceSchema(`
     checkout_at TIMESTAMPTZ,
     removed_at TIMESTAMPTZ,
     cancelled_at TIMESTAMPTZ,
+    environment TEXT NOT NULL DEFAULT 'local',
     swipe_ref TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -87,7 +93,10 @@ export const ensureSchema = onceSchema(`
   );
   CREATE INDEX IF NOT EXISTS invoices_customer_idx ON invoices (customer_id);
   CREATE INDEX IF NOT EXISTS invoices_issued_idx ON invoices (issued_at);
-  CREATE INDEX IF NOT EXISTS invoices_swipe_ref_idx ON invoices (swipe_ref);
+  CREATE INDEX IF NOT EXISTS invoices_number_idx ON invoices (number);
+  CREATE INDEX IF NOT EXISTS invoices_environment_idx ON invoices (environment);
+  CREATE UNIQUE INDEX IF NOT EXISTS invoices_swipe_ref_uidx
+    ON invoices (swipe_ref) WHERE swipe_ref IS NOT NULL;
   -- The online payment flow finds its invoice by gateway order id (stored in
   -- metadata at order creation) — indexed so the verify path stays a lookup.
   CREATE INDEX IF NOT EXISTS invoices_rzp_order_idx ON invoices ((metadata->>'rzp_order_id'));
@@ -346,3 +355,22 @@ export function msOrNull(v: any): number | null {
 
 /** SQL expression for a TIMESTAMPTZ parameter passed as unix ms. */
 export const TS = (param: string) => `to_timestamp(${param}::double precision / 1000.0)`;
+
+/**
+ * Which deployment wrote the row — stamped on invoices so prod, preview, dev
+ * and local test data can be told apart (they share one Neon database). Also
+ * scopes number-based invoice lookups: a serial from a local test must never
+ * catch a prod payment, or vice versa.
+ */
+export function appEnvironment(): "prod" | "preview" | "dev" | "local" {
+  switch (process.env.VERCEL_ENV) {
+    case "production":
+      return "prod";
+    case "preview":
+      return "preview";
+    case "development":
+      return "dev";
+    default:
+      return "local";
+  }
+}
