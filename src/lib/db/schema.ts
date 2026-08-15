@@ -86,6 +86,7 @@ export const ensureSchema = onceSchema(`
     removed_at TIMESTAMPTZ,
     cancelled_at TIMESTAMPTZ,
     environment TEXT NOT NULL DEFAULT 'local',
+    is_test BOOLEAN NOT NULL DEFAULT FALSE,
     swipe_ref TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -373,4 +374,24 @@ export function appEnvironment(): "prod" | "preview" | "dev" | "local" {
     default:
       return "local";
   }
+}
+
+/**
+ * Is this invoice a test? One database and one Swipe account serve every
+ * environment, so real and test rows live side by side; this is the flag
+ * reporting filters on (`WHERE NOT is_test`).
+ *
+ * Anything not written by the production deployment is a test by definition.
+ * Tests made THROUGH production (booking on the live site to check a flow)
+ * are caught by TEST_PHONE_NUMBERS — a comma-separated env list of the
+ * owner/staff numbers used for testing.
+ */
+export function isTestInvoice(phone?: string | null): boolean {
+  if (appEnvironment() !== "prod") return true;
+  if (!phone) return false;
+  return (process.env.TEST_PHONE_NUMBERS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .includes(phone);
 }

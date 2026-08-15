@@ -18,7 +18,7 @@
 
 import { randomUUID } from "node:crypto";
 import { getPool } from "../pg";
-import { appEnvironment, ensureSchema } from "../db/schema";
+import { appEnvironment, ensureSchema, isTestInvoice } from "../db/schema";
 import { upsertCustomer, type UpsertCustomerInput } from "../customers/db";
 import { ensureProduct, type ProductKind } from "../products/db";
 
@@ -90,15 +90,16 @@ export async function recordInvoice(
     const { rows } = await client.query(
       `INSERT INTO invoices (
          id, number, customer_id, source, status, gross_inr, discount_inr,
-         net_inr, environment, swipe_ref, metadata
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         net_inr, environment, is_test, swipe_ref, metadata
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        ON CONFLICT (swipe_ref) WHERE swipe_ref IS NOT NULL DO NOTHING
        RETURNING id`,
       [
         randomUUID(), input.number, customer.id, input.source,
         input.netInr <= 0 ? "paid" : "unpaid",
         input.grossInr, input.discountInr, input.netInr,
-        appEnvironment(), input.swipeRef, JSON.stringify(input.metadata ?? {}),
+        appEnvironment(), isTestInvoice(input.customer.phone),
+        input.swipeRef, JSON.stringify(input.metadata ?? {}),
       ]
     );
 
@@ -152,12 +153,13 @@ export async function ensureExternalInvoice(input: {
   if (existing) return existing;
   const { rows } = await getPool().query(
     `INSERT INTO invoices (
-       id, number, customer_id, source, gross_inr, net_inr, issued_at, environment, metadata
-     ) VALUES ($1,$2,$3,'external',$4,$4,COALESCE(to_timestamp($5::double precision / 1000.0), now()),$6,$7)
+       id, number, customer_id, source, gross_inr, net_inr, issued_at, environment, is_test, metadata
+     ) VALUES ($1,$2,$3,'external',$4,$4,COALESCE(to_timestamp($5::double precision / 1000.0), now()),$6,$7,$8)
      RETURNING id`,
     [
       randomUUID(), input.number, customer.id, input.totalInr ?? 0,
-      input.issuedAt ?? null, appEnvironment(), JSON.stringify(input.metadata ?? {}),
+      input.issuedAt ?? null, appEnvironment(), isTestInvoice(input.customer.phone),
+      JSON.stringify(input.metadata ?? {}),
     ]
   );
   return rows[0].id as string;
