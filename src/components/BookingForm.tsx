@@ -302,8 +302,10 @@ export default function BookingForm() {
         return;
       }
 
-      // Online payment: the booking is already saved, so every failure path
-      // from here lands on the confirmation screen (unpaid → pay at counter).
+      // Online payment: the booking is already saved. GATEWAY failures (script
+      // blocked, no order) still land on the confirmation screen — the
+      // customer chose to pay and we couldn't offer it. A deliberate cancel is
+      // different; see ondismiss below.
       if (!(await loadRazorpay()) || !window.Razorpay) {
         goSuccess();
         return;
@@ -344,8 +346,18 @@ export default function BookingForm() {
           goSuccess();
         },
         modal: {
-          // Closed without paying — still booked; pay at the counter.
-          ondismiss: goSuccess,
+          // Closed without paying — a choice, not a confirmation. Back to the
+          // form with both buttons live: the invoice is already created and
+          // cached, so either button reuses it rather than double-booking.
+          // Silently confirming here would tell the family "booked, pay at
+          // the counter" when they may have been backing out entirely.
+          ondismiss: () => {
+            payInFlight.current = false;
+            setStatus("idle");
+            setError(
+              "Payment cancelled — nothing was charged. Try again, or pick Pay at counter."
+            );
+          },
         },
       }).open();
     } catch (err) {
