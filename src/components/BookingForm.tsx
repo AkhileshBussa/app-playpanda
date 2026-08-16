@@ -33,9 +33,12 @@ interface PaymentOrder {
 }
 
 interface CheckoutResponse {
-  invoiceNumber: string;
-  /** Opaque billing-backend handle (used later to record payment). */
-  ref: string;
+  /** True = pay-first: no invoice exists until the payment captures. */
+  pending?: boolean;
+  /** Set on invoice-first (pay at counter / gateway-down) responses only. */
+  invoiceNumber?: string;
+  /** Opaque billing-backend handle (legacy invoice-first payments only). */
+  ref?: string;
   total: number;
   skipPayment?: boolean;
   payment?: PaymentOrder | null;
@@ -297,6 +300,9 @@ export default function BookingForm() {
       const cacheKey = JSON.stringify(payload);
 
       let checkout = checkoutCache.current?.key === cacheKey ? checkoutCache.current.data : null;
+      // A cached pay-first response carries no invoice, so it can't serve a
+      // "pay at counter" tap — that needs a fresh call to create the invoice.
+      if (checkout && !payOnline && !checkout.invoiceNumber) checkout = null;
       if (!checkout) {
         const res = await fetch("/api/checkout", {
           method: "POST",
@@ -313,23 +319,35 @@ export default function BookingForm() {
       // always), so the next visit's form comes prefilled.
       saveProfile({ phone, name: name.trim(), kidNames });
 
-      // Invoice created in Swipe. The confirmation screen is keyed by the
-      // invoice number (without prefix) and fetches everything from the backend.
-      const number = checkout.invoiceNumber.replace(/^\D+/, "");
-      const goSuccess = () => router.push(`/success/${encodeURIComponent(number)}`);
+      // The confirmation screen is keyed by the invoice number (without
+      // prefix). Pay-first bookings don't have one yet — theirs arrives with
+      // the payment verification.
+      const goSuccess = (invoiceNumber: string) =>
+        router.push(`/success/${encodeURIComponent(invoiceNumber.replace(/^\D+/, ""))}`);
 
       const order = checkout.payment;
       if (!payOnline || checkout.skipPayment || !order) {
-        goSuccess();
+        if (checkout.invoiceNumber) {
+          goSuccess(checkout.invoiceNumber);
+        } else {
+          // A pay-first response can't book without payment; start over.
+          checkoutCache.current = null;
+          throw new Error("Something went wrong — please try again");
+        }
         return;
       }
 
-      // Online payment: the booking is already saved. GATEWAY failures (script
-      // blocked, no order) still land on the confirmation screen — the
-      // customer chose to pay and we couldn't offer it. A deliberate cancel is
-      // different; see ondismiss below.
+      // The customer chose to pay and the gateway script won't load (blocked,
+      // offline). With pay-first there is no invoice to fall back on — tell
+      // them instead of pretending, and leave both buttons live.
       if (!(await loadRazorpay()) || !window.Razorpay) {
-        goSuccess();
+        if (checkout.invoiceNumber) {
+          goSuccess(checkout.invoiceNumber);
+          return;
+        }
+        payInFlight.current = false;
+        setStatus("idle");
+        setError("Couldn't open online payment — please pick Pay at counter.");
         return;
       }
 
@@ -343,36 +361,48 @@ export default function BookingForm() {
         description: "Play session booking",
         order_id: order.orderId,
         prefill: { name: name.trim(), contact: phone },
-        notes: { invoice: checkout.invoiceNumber },
+        // Pay-first bookings have no invoice yet; the order itself is the ref.
+        notes: { invoice: checkout.invoiceNumber ?? order.orderId },
         theme: { color: "#FF613A" },
         handler: async (rzp) => {
-          // Paid. Ask the backend to verify the signature and mark the invoice
-          // paid; even if that fails, the money is collected — proceed to the
-          // confirmation screen rather than alarming the customer.
+          // Paid. The backend verifies the signature and BUILDS the booking —
+          // with pay-first, the invoice only exists once this call succeeds,
+          // and its number comes back in the response.
           setStatus("verifying");
           try {
-            await fetch("/api/payment/verify", {
+            const res = await fetch("/api/payment/verify", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                ref,
+                ...(ref ? { ref } : {}),
                 orderId: order.orderId,
                 paymentId: rzp.razorpay_payment_id,
                 signature: rzp.razorpay_signature,
                 raw: rzp,
               }),
             });
+            const data = await res.json().catch(() => ({}));
+            const invoiceNumber = data.invoiceNumber || checkout.invoiceNumber;
+            if (res.ok && invoiceNumber) {
+              goSuccess(invoiceNumber);
+              return;
+            }
           } catch {
-            // Verified server-side on retry at the counter if needed.
+            // fall through to the reassurance below
           }
-          goSuccess();
+          // Money taken, booking not confirmed yet — the webhook will finish
+          // it server-side. Don't alarm them, and don't let them pay twice.
+          payInFlight.current = false;
+          setStatus("idle");
+          setError(
+            "Payment received! We're finishing your booking — please show the payment confirmation at the counter."
+          );
         },
         modal: {
           // Closed without paying — a choice, not a confirmation. Back to the
-          // form with both buttons live: the invoice is already created and
-          // cached, so either button reuses it rather than double-booking.
-          // Silently confirming here would tell the family "booked, pay at
-          // the counter" when they may have been backing out entirely.
+          // form with both buttons live. With pay-first nothing exists in
+          // Swipe yet, so backing out truly leaves nothing behind; retrying
+          // reuses the same order, and Pay at counter creates the invoice.
           ondismiss: () => {
             payInFlight.current = false;
             setStatus("idle");

@@ -22,6 +22,7 @@ third party's API.
 | `products` | Our catalogue rows, upserted lazily from code (`pricing.ts`, `members/plans.ts`) the first time each product is billed. |
 | `invoices` | Mirror of every invoice the app creates (`app` / `counter` / `membership_punch` / `external`), with totals, status, the session lifecycle stamps (check-in/out, removal, cancellation), and the `environment` that wrote it (`prod` / `preview` / `dev` / `local`) so test rows never mix into prod analysis. |
 | `invoice_items` | One row per billed line, referencing `products`. |
+| `pending_bookings` | Pay-first online bookings waiting for their money: the priced payload keyed by Razorpay order id. Consumed (once) when the payment captures and the real invoice is built; abandoned rows age out harmlessly — nothing ever reaches Swipe for an unpaid online booking. |
 | `payments` | One row per payment (counter + gateway), referencing `invoices`. |
 | `memberships`, `membership_visits` | Source of truth for passes and punches (Swipe's ₹0 punch invoices are receipts). |
 | `discount_codes`, `discount_redemptions` | Ledger of record for discounts — limits are enforced here, nowhere else. |

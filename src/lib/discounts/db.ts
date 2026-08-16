@@ -298,7 +298,19 @@ export interface RedeemInput {
  * so serialising them costs nothing and removes the whole class of
  * count-then-insert races that a bare check would leave open.
  */
-export async function redeem(input: RedeemInput): Promise<DiscountRedemption> {
+export async function redeem(
+  input: RedeemInput,
+  opts?: {
+    /**
+     * Record without re-checking limits. For the pay-first flow: the code was
+     * evaluated when the order was priced, and by the time the money lands the
+     * last use may nominally be gone — but the customer has already PAID the
+     * discounted amount, so the ledger records what happened rather than
+     * arguing with it. Limits stay strict everywhere a price is still fluid.
+     */
+    skipLimits?: boolean;
+  }
+): Promise<DiscountRedemption> {
   await ensureSchema();
 
   // Resolve (or create) the customer before taking the code lock — an upsert
@@ -318,7 +330,7 @@ export async function redeem(input: RedeemInput): Promise<DiscountRedemption> {
 
     // A one-off counter grant has no code row, so there's nothing to lock or
     // limit — it's a manager's decision, recorded rather than policed.
-    if (input.codeId) {
+    if (input.codeId && !opts?.skipLimits) {
       const { rows: locked } = await client.query(
         `SELECT * FROM discount_codes WHERE id = $1 FOR UPDATE`,
         [input.codeId]

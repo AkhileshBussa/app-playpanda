@@ -5,16 +5,16 @@ import { billing, type PaymentOrder } from "@/lib/billing";
 import { createPaymentOrder, gatewayEnabled } from "@/lib/razorpay";
 import { HEARD_FROM_SOURCES } from "@/lib/heardFrom";
 import { setHeardFrom, upsertCustomer } from "@/lib/customers/db";
-import { mergeInvoiceMetadata, quoteMirrorLines, recordInvoice } from "@/lib/invoices/db";
+import { quoteMirrorLines, recordInvoice } from "@/lib/invoices/db";
+import { createPendingBooking, pendingConfigured } from "@/lib/bookings/pending";
 import { dbConfigured } from "@/lib/pg";
 import {
   attachInvoice,
-  attachPayment,
   evaluateCode,
   redeem,
   releaseRedemption,
 } from "@/lib/discounts/db";
-import { DiscountError } from "@/lib/discounts/types";
+import { DiscountError, type DiscountCode } from "@/lib/discounts/types";
 import { CUSTOMER_CODES_ENABLED } from "@/lib/discounts/enabled";
 
 const bookingSchema = z.object({
@@ -34,6 +34,18 @@ const bookingSchema = z.object({
   discountCode: z.string().trim().min(1).max(40).optional(),
 });
 
+/**
+ * Two flows, split on whether money is being taken NOW:
+ *
+ *  - PAY FIRST (online): nothing is created in Swipe here. The priced booking
+ *    waits in pending_bookings and the response carries only the gateway
+ *    order; the invoice is built when the payment actually captures
+ *    (/api/payment/verify or the webhook). A failed or abandoned payment
+ *    leaves no invoice behind — that's the point.
+ *
+ *  - INVOICE FIRST (pay at counter, or the gateway/database is down): the
+ *    unpaid invoice IS the booking, created immediately, settled at the desk.
+ */
 export async function POST(req: Request) {
   let input: z.infer<typeof bookingSchema>;
   try {
@@ -47,24 +59,14 @@ export async function POST(req: Request) {
   let quote: Quote = computeQuote(input);
   const kidNames = (input.kidNames ?? []).map((n) => n.trim()).filter(Boolean);
 
-  /**
-   * Spend the code BEFORE the invoice exists, and hand it back if the invoice
-   * write then fails. The other order would let a discounted invoice exist with
-   * nothing in the ledger to explain it, and an unexplained discount in the
-   * books is worse than a code that has to be given back.
-   *
-   * The customer's payment choice deliberately doesn't matter here: a family
-   * holding a code gets it whether they pay online or at the counter, so the
-   * invoice is created discounted either way.
-   */
-  let redemptionId: string | null = null;
+  // Evaluate (don't spend) the code: both flows need the discounted price,
+  // but only the invoice-first flow reserves the use here — the pay-first
+  // flow records the redemption when the paid invoice is actually built.
+  let discountCode: DiscountCode | null = null;
   if (input.discountCode) {
     // The form hides the box when codes are off; this is the half that matters,
     // since a hidden field is no protection against a hand-made request.
-    if (!CUSTOMER_CODES_ENABLED) {
-      return NextResponse.json({ error: "That code isn't valid" }, { status: 400 });
-    }
-    if (!dbConfigured()) {
+    if (!CUSTOMER_CODES_ENABLED || !dbConfigured()) {
       return NextResponse.json({ error: "That code isn't valid" }, { status: 400 });
     }
     try {
@@ -74,19 +76,83 @@ export async function POST(req: Request) {
         gross: quote.total,
         channel: "online",
       });
-      const discounted = applyDiscount(quote, { code: code.code, amount });
+      quote = applyDiscount(quote, { code: code.code, amount });
+      discountCode = code;
+    } catch (err) {
+      if (err instanceof DiscountError) {
+        return NextResponse.json({ error: err.message }, { status: 400 });
+      }
+      console.error("discount evaluation failed:", err);
+      return NextResponse.json(
+        { error: "We couldn't apply that code. Please try again or ask at the counter." },
+        { status: 502 }
+      );
+    }
+  }
+
+  // 4-digit code the customer shows and the counter matches against the invoice.
+  const validationCode = String(Math.floor(1000 + Math.random() * 9000));
+  const paymentsEnabled = process.env.NEXT_PUBLIC_PAYMENTS_ENABLED !== "false";
+  const payFirst =
+    paymentsEnabled && input.payNow !== false && gatewayEnabled() && pendingConfigured();
+
+  // ── Pay first ──────────────────────────────────────────────────────────────
+  if (payFirst) {
+    try {
+      const payment: PaymentOrder = await createPaymentOrder(
+        quote.total,
+        // No invoice exists yet — the receipt is a placeholder; fulfilment
+        // finds the booking by ORDER id, never by receipt.
+        `PENDING-${validationCode}-${Date.now() % 1_000_000}`,
+        quote.discount
+      );
+      await createPendingBooking(payment.orderId, {
+        customer: { name: input.name.trim(), phone: input.phone, kidNames },
+        lines: quote.lines,
+        grossInr: quote.gross,
+        discountInr: quote.discount?.amount ?? 0,
+        netInr: quote.total,
+        validationCode,
+        discount: discountCode ? { codeId: discountCode.id, code: discountCode.code } : null,
+        heardFrom: [...input.heardFrom],
+      });
+
+      return NextResponse.json({
+        pending: true,
+        skipPayment: false,
+        payment,
+        total: quote.total,
+        gross: quote.gross,
+        discount: quote.discount ?? null,
+      });
+    } catch (err) {
+      // Gateway or database trouble — degrade to the invoice-first flow below
+      // rather than losing the booking. Worst case the family pays at the desk.
+      console.error("pay-first setup failed (falling back to counter):", err);
+    }
+  }
+
+  // ── Invoice first ──────────────────────────────────────────────────────────
+
+  /**
+   * Spend the code BEFORE the invoice exists, and hand it back if the invoice
+   * write then fails. The other order would let a discounted invoice exist
+   * with nothing in the ledger to explain it.
+   */
+  let redemptionId: string | null = null;
+  if (discountCode) {
+    try {
       const redemption = await redeem({
-        codeId: code.id,
-        code: code.code,
+        codeId: discountCode.id,
+        code: discountCode.code,
         phone: input.phone,
         customerName: input.name.trim(),
-        gross: discounted.gross,
-        discount: discounted.discount?.amount ?? 0,
-        net: discounted.total,
+        gross: quote.gross,
+        discount: quote.discount?.amount ?? 0,
+        net: quote.total,
         channel: "online",
       });
       redemptionId = redemption.id;
-      quote = discounted;
     } catch (err) {
       if (err instanceof DiscountError) {
         return NextResponse.json({ error: err.message }, { status: 400 });
@@ -98,10 +164,6 @@ export async function POST(req: Request) {
       );
     }
   }
-
-  // 4-digit code the customer shows and the counter matches against the invoice.
-  const validationCode = String(Math.floor(1000 + Math.random() * 9000));
-  const paymentsEnabled = process.env.NEXT_PUBLIC_PAYMENTS_ENABLED !== "false";
 
   try {
     const booking = await billing.createBooking({
@@ -163,43 +225,10 @@ export async function POST(req: Request) {
       }
     }
 
-    // The invoice now exists in the billing backend (unpaid). With payments
-    // on, also create a Razorpay order (our own account — see lib/razorpay)
-    // so the browser can open checkout. Any failure here degrades to
-    // pay-at-counter — the booking is already saved and must never be lost
-    // to a payment hiccup.
-    let payment: PaymentOrder | null = null;
-    if (paymentsEnabled && input.payNow !== false && gatewayEnabled()) {
-      try {
-        // The code rides along in the order notes so a discounted booking can
-        // be recognised from the Razorpay dashboard alone, without joining
-        // anything — the mapping the counter asked for, on the gateway side.
-        payment = await createPaymentOrder(quote.total, booking.invoiceNumber, quote.discount);
-      } catch (err) {
-        console.error("payment order creation failed (falling back to counter):", err);
-      }
-    }
-
-    // Remember which order was created for this invoice — the verify path
-    // finds the mirror row by order id, since it only holds gateway handles.
-    if (payment && mirror) {
-      await mergeInvoiceMetadata(mirror.invoiceId, { rzp_order_id: payment.orderId }).catch(
-        (err) => console.error("failed to note razorpay order on invoice:", err)
-      );
-    }
-
-    // Remember which order settled this discount, once we know its id.
-    if (redemptionId && payment) {
-      try {
-        await attachPayment({ invoice: booking.invoiceNumber, rzpOrderId: payment.orderId });
-      } catch (err) {
-        console.error("failed to link redemption to razorpay order:", err);
-      }
-    }
-
     return NextResponse.json({
-      skipPayment: payment == null,
-      payment,
+      pending: false,
+      skipPayment: true,
+      payment: null,
       invoiceNumber: booking.invoiceNumber,
       ref: booking.ref,
       validationCode,

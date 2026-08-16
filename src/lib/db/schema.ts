@@ -101,6 +101,24 @@ export const ensureSchema = onceSchema(`
   -- metadata at order creation) — indexed so the verify path stays a lookup.
   CREATE INDEX IF NOT EXISTS invoices_rzp_order_idx ON invoices ((metadata->>'rzp_order_id'));
 
+  -- A paid-online booking BEFORE its invoice exists. The online flow creates
+  -- no invoice until Razorpay confirms the money (a failed or abandoned
+  -- payment must leave nothing behind in Swipe), so the booking details wait
+  -- here, keyed by the gateway order. Consumed exactly once — the status flip
+  -- is the claim that decides whether browser-confirm or the webhook builds
+  -- the invoice. Abandoned rows just age out harmlessly.
+  CREATE TABLE IF NOT EXISTS pending_bookings (
+    id TEXT PRIMARY KEY,
+    rzp_order_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    payload JSONB NOT NULL,
+    environment TEXT NOT NULL DEFAULT 'local',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata JSONB NOT NULL DEFAULT '{}'
+  );
+  CREATE INDEX IF NOT EXISTS pending_bookings_created_idx ON pending_bookings (created_at);
+
   CREATE TABLE IF NOT EXISTS invoice_items (
     id TEXT PRIMARY KEY,
     invoice_id TEXT NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
