@@ -149,6 +149,13 @@ export async function fulfilPendingBooking(input: FulfilInput): Promise<FulfilRe
         priceWithTax: l.priceWithTax,
       })),
       validationCode: p.validationCode,
+      // The money moved before this invoice existed — write the gateway ids
+      // onto the document so it can be validated against Razorpay from Swipe.
+      paidVia: {
+        gateway: "Razorpay",
+        orderId: input.rzpOrderId,
+        paymentId: input.rzpPaymentId,
+      },
     });
 
     await billing.recordPayment({

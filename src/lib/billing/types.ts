@@ -41,6 +41,13 @@ export interface CreateBookingInput {
    * so it gets no code and its timer runs from the invoice.
    */
   validationCode?: string;
+  /**
+   * Set when the booking was already paid online before the invoice is being
+   * created (the pay-first flow). The adapter records the gateway identifiers
+   * on the invoice itself, so whoever reads it in the billing backend can
+   * cross-check the money without leaving the document.
+   */
+  paidVia?: { gateway: string; orderId: string; paymentId: string };
 }
 
 export interface Booking {

@@ -513,13 +513,23 @@ async function createSwipeInvoice(
   const netAmount = round2(items.reduce((s, i) => s + i.net_amount, 0));
   const taxAmount = round2(totalAmount - netAmount);
 
-  // The validation code lives ONLY in the document custom header. Notes just
-  // carry the kids' names for the counter; reference is a plain label.
+  // The validation code lives ONLY in the document custom header. Notes carry
+  // the kids' names for the counter and — for a booking paid online before
+  // this invoice existed — the gateway ids, so the payment can be validated
+  // against Razorpay straight from the document. Reference is a plain label.
   //
   // No code (a booking made at the counter) means no header at all — the ops
   // monitor reads the header's presence as "this session waits for check-in",
   // so writing an empty one would leave a walk-in stuck at Waiting.
   const kids = input.customer.kidNames.filter(Boolean);
+  const notes = [
+    kids.length ? `Kids: ${kids.join(", ")}` : "",
+    input.paidVia
+      ? `Paid via ${input.paidVia.gateway} · ${input.paidVia.paymentId} · ${input.paidVia.orderId}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   const initial = await getNextInvoiceSerial();
   const res = await createDocWithRetry(initial, (docNo, serial) =>
@@ -531,7 +541,7 @@ async function createSwipeInvoice(
       taxAmount,
       netAmount,
       partyId: customerId,
-      notes: kids.length ? `Kids: ${kids.join(", ")}` : "",
+      notes,
       reference: "Play Panda booking",
       documentCustomHeaders: input.validationCode
         ? [{ header_id: VALIDATION_CODE_HEADER.headerId, value: input.validationCode }]
