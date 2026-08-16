@@ -3,6 +3,8 @@ import { z } from "zod";
 import { isOpsAuthed } from "@/lib/ops/auth";
 import { billing } from "@/lib/billing";
 import { PAYMENT_METHODS } from "@/lib/billing/types";
+import { recordPaymentMirror } from "@/lib/invoices/db";
+import { dbConfigured } from "@/lib/pg";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +34,16 @@ export async function POST(req: Request) {
 
   try {
     const result = await billing.collectPayment(input);
+    // Mirror into our ledger — best-effort, never in the counter's way.
+    if (dbConfigured()) {
+      await recordPaymentMirror({
+        invoiceNumber: result.invoiceNumber,
+        amountInr: input.amount,
+        method: input.method,
+        transactionRef: input.transactionRef,
+        amountDueAfter: result.amountDue,
+      }).catch((mirrorErr) => console.error("payment mirror failed:", mirrorErr));
+    }
     return NextResponse.json(result);
   } catch (err) {
     // Overpayment / already-settled come back as plain messages worth showing;

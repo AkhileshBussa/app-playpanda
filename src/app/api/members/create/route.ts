@@ -122,6 +122,7 @@ export async function POST(req: Request) {
       customerName: input.customerName,
       kidNames: input.kidNames,
       ...plan,
+      punchTaxRatePercent: getPunchProduct(plan.punchProductId)?.taxRatePercent ?? 18,
       saleInvoiceNumber: input.saleInvoiceNumber,
       startsOn,
       expiresOn,

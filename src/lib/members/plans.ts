@@ -51,6 +51,24 @@ export const MEMBERSHIP_PLANS: MembershipPlan[] = [
     blurb: "5 plays · 2 hrs each · 6 months",
   },
   {
+    key: "fun-ten",
+    name: "Fun Ten Pass",
+    saleProductId: 199,
+    punchProductId: 200,
+    punchProductName: "Fun Ten Pass - 1hr - Punch",
+    totalPlays: 10,
+    hoursPerPlay: 1,
+    kidsPerPlay: 1,
+    // Blank on the Swipe product (its "Validity (in Months)" was never filled);
+    // 6 months chosen to match Fun Five Pass.
+    validityMonths: 6,
+    priceWithTax: 3499,
+    taxRatePercent: 18,
+    weekdaysOnly: false,
+    oncePerDay: false,
+    blurb: "10 plays · 1 hr each · 6 months",
+  },
+  {
     key: "pro-12",
     name: "Panda Pro 12",
     saleProductId: 7,

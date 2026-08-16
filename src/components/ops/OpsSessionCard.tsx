@@ -39,10 +39,12 @@ interface OpsSessionCardProps {
   onCheckout: (session: OpsSession, undo: boolean) => void;
   /** Take a no-show off today's board (the invoice is left alone). */
   onRemove?: (session: OpsSession, undo: boolean) => void;
-  /** Open the invoice's line items; omitted for sessions with no invoice. */
+  /** Open the invoice's line items. */
   onShowInvoice?: (session: OpsSession) => void;
   /** Take payment against this session's invoice. */
   onCollect?: (session: OpsSession) => void;
+  /** Discount this session's invoice before collecting. */
+  onDiscount?: (session: OpsSession) => void;
 }
 
 export default function OpsSessionCard({
@@ -53,6 +55,7 @@ export default function OpsSessionCard({
   onRemove,
   onShowInvoice,
   onCollect,
+  onDiscount,
 }: OpsSessionCardProps) {
   const [now, setNow] = useState(Date.now());
   const status = computeOpsStatus(session, now);
@@ -105,16 +108,15 @@ export default function OpsSessionCard({
   // the button rather than offering one that goes nowhere.
   const whatsappLink = timeUpWhatsappLink(session);
 
-  // Manual membership visits have no invoice behind them, so there's nothing
-  // for them to open.
-  const showInvoice = onShowInvoice && !session.isManual ? () => onShowInvoice(session) : null;
+  // Every card on the board has an invoice behind it now, membership punches
+  // included — so this is only null when the board didn't offer a handler.
+  const showInvoice = onShowInvoice ? () => onShowInvoice(session) : null;
 
   // Whether removing this booking will also cancel its invoice — the server
   // decides for real (and re-checks against Swipe), but the confirm has to say
   // which of the two things the next tap does. A `#` in the id means one invoice
   // covers several cards, and those are never cancelled from here.
   const cancelsInvoice =
-    !session.isManual &&
     !session.paid &&
     session.amountDue > 0 &&
     !session.id.includes("#");
@@ -188,22 +190,35 @@ export default function OpsSessionCard({
           );
         })()}
 
-        {/* Badges: membership marker + amount due (partial payments show the remainder) */}
-        {((session.isMembership && status !== "checked_out") ||
-          (session.amountDue > 0 && status !== "checked_out")) && (
-          <div className="mb-1.5 flex flex-wrap gap-1.5">
-            {session.isMembership && (
-              <span className="rounded-full bg-teal px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-cream">
-                Member
-              </span>
-            )}
-            {session.amountDue > 0 && (
-              <span className="rounded-full bg-yellow px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-ink">
-                ₹{session.amountDue.toLocaleString("en-IN")} due
-              </span>
-            )}
-          </div>
-        )}
+        {/* Badges: membership marker + money state. The money chip is always one
+            of two positives — yellow "due" or green "paid" — so the counter reads
+            the bill from the chip itself, never from a chip's absence. Memberships
+            and manual visits carry no bill, so they get neither. */}
+        {(() => {
+          const settled =
+            !session.isMembership && session.paid && session.amountDue <= 0;
+          if (status === "checked_out" || (!session.isMembership && session.amountDue <= 0 && !settled))
+            return null;
+          return (
+            <div className="mb-1.5 flex flex-wrap gap-1.5">
+              {session.isMembership && (
+                <span className="rounded-full bg-teal px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-cream">
+                  Member
+                </span>
+              )}
+              {session.amountDue > 0 && (
+                <span className="rounded-full bg-yellow px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-ink">
+                  ₹{session.amountDue.toLocaleString("en-IN")} due
+                </span>
+              )}
+              {settled && (
+                <span className="rounded-full bg-green px-2.5 py-0.5 text-xs font-black uppercase tracking-wide text-cream">
+                  Paid ✓
+                </span>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Timer / waiting state */}
         <div className="flex-1 text-center">
@@ -254,13 +269,28 @@ export default function OpsSessionCard({
 
       {/* Money owed is collectable from the card, whatever the play state —
           it's the same counter conversation as check-in. */}
-      {onCollect && !session.isManual && session.amountDue > 0 && status !== "checked_out" && (
-        <button
-          onClick={() => onCollect(session)}
-          className="mt-2 w-full rounded-full bg-green py-2 text-sm font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
-        >
-          Collect ₹{session.amountDue.toLocaleString("en-IN")}
-        </button>
+      {onCollect && session.amountDue > 0 && status !== "checked_out" && (
+        <div className="mt-2 flex gap-1.5">
+          <button
+            onClick={() => onCollect(session)}
+            className="flex-1 rounded-full bg-green py-2 text-sm font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
+          >
+            Collect ₹{session.amountDue.toLocaleString("en-IN")}
+          </button>
+          {/* Sits beside Collect, not inside it: discounting is the conversation
+              that happens just BEFORE taking the money, and once anything has
+              been collected the invoice can't be re-priced at all. */}
+          {onDiscount && (
+            <button
+              onClick={() => onDiscount(session)}
+              title="Apply a discount"
+              aria-label="Apply a discount"
+              className="shrink-0 rounded-full bg-white px-3 py-2 text-sm font-black text-ink/60 shadow-btn transition-all hover:text-ink active:translate-y-0.5 active:shadow-btn-pressed"
+            >
+              % Off
+            </button>
+          )}
+        </div>
       )}
 
       {/* Actions */}

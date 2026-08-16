@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { isOpsAuthed } from "@/lib/ops/auth";
 import { setCheckout, clearCheckout } from "@/lib/ops/state";
+import { stampInvoiceSession } from "@/lib/invoices/db";
+import { dbConfigured } from "@/lib/pg";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +26,14 @@ export async function POST(req: Request) {
   if (!id) return NextResponse.json({ error: "Invalid request" }, { status: 400 });
 
   try {
-    await setCheckout(id);
+    const at = Date.now();
+    await setCheckout(id, at);
+    // Durable copy on the invoice mirror; Redis stays the day's fast path.
+    if (dbConfigured()) {
+      await stampInvoiceSession("checkout", id, at).catch((err) =>
+        console.error("check-out stamp failed:", err)
+      );
+    }
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error("check-out failed:", err);
@@ -42,6 +51,11 @@ export async function DELETE(req: Request) {
 
   try {
     await clearCheckout(id);
+    if (dbConfigured()) {
+      await stampInvoiceSession("checkout", id, null).catch((err) =>
+        console.error("check-out unstamp failed:", err)
+      );
+    }
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error("undo check-out failed:", err);

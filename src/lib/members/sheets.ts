@@ -228,7 +228,7 @@ export async function mirrorVisit(v: MembershipVisit, m: Membership): Promise<vo
     const left = playsLeft(m);
     await appendRow(VISITS_TAB, [
       istDateTime(v.visitedAt),
-      v.phone,
+      m.phone,
       m.customerName,
       m.planName,
       v.kidsCount,

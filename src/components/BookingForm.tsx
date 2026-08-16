@@ -3,13 +3,34 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
-import { computeQuote, EXTRA_ADULT, PACKAGES, SOCKS, type PackageId } from "@/lib/pricing";
+import {
+  applyDiscount,
+  computeQuote,
+  EXTRA_ADULT,
+  formatInr,
+  PACKAGES,
+  SOCKS,
+  type AppliedDiscount,
+  type PackageId,
+} from "@/lib/pricing";
+import { HEARD_FROM_SOURCES } from "@/lib/heardFrom";
+import { CUSTOMER_CODES_ENABLED } from "@/lib/discounts/enabled";
+import { clearProfile, loadProfile, saveProfile } from "@/lib/profile";
 
-const inr = (n: number) => `₹${n.toLocaleString("en-IN")}`;
+const inr = formatInr;
 
-// While Razorpay isn't live yet, this is "false": bookings create the invoice
-// but skip online payment (pay at the counter).
+// Kill switch for online payment: set NEXT_PUBLIC_PAYMENTS_ENABLED="false" to
+// fall back to book-now-pay-at-counter (e.g. if the gateway misbehaves).
 const PAYMENTS_ENABLED = process.env.NEXT_PUBLIC_PAYMENTS_ENABLED !== "false";
+
+/** Razorpay order created by the billing backend's connected gateway. */
+interface PaymentOrder {
+  orderId: string;
+  keyId: string;
+  /** Paise. */
+  amountMinor: number;
+  currency: string;
+}
 
 interface CheckoutResponse {
   invoiceNumber: string;
@@ -17,9 +38,59 @@ interface CheckoutResponse {
   ref: string;
   total: number;
   skipPayment?: boolean;
+  payment?: PaymentOrder | null;
 }
 
-type Status = "idle" | "booking";
+type Status = "idle" | "booking" | "paying" | "verifying";
+
+// ── Razorpay checkout.js ─────────────────────────────────────────────────────
+
+interface RazorpaySuccess {
+  razorpay_payment_id: string;
+  razorpay_order_id: string;
+  razorpay_signature: string;
+}
+
+interface RazorpayOptions {
+  key: string;
+  /** Paise, as a string (checkout.js convention). */
+  amount: string;
+  currency: string;
+  name: string;
+  description?: string;
+  order_id: string;
+  prefill?: { name?: string; contact?: string };
+  notes?: Record<string, string>;
+  theme?: { color?: string };
+  handler: (response: RazorpaySuccess) => void;
+  modal?: { ondismiss?: () => void };
+}
+
+declare global {
+  interface Window {
+    Razorpay?: new (options: RazorpayOptions) => { open: () => void };
+  }
+}
+
+let razorpayScript: Promise<boolean> | null = null;
+
+/** Load checkout.js once; resolves false (never rejects) when offline. */
+function loadRazorpay(): Promise<boolean> {
+  if (typeof window !== "undefined" && window.Razorpay) return Promise.resolve(true);
+  if (!razorpayScript) {
+    razorpayScript = new Promise((resolve) => {
+      const script = document.createElement("script");
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      script.onload = () => resolve(true);
+      script.onerror = () => {
+        razorpayScript = null; // allow a retry on the next attempt
+        resolve(false);
+      };
+      document.body.appendChild(script);
+    });
+  }
+  return razorpayScript;
+}
 
 export default function BookingForm() {
   const router = useRouter();
@@ -37,11 +108,42 @@ export default function BookingForm() {
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   const [status, setStatus] = useState<Status>("idle");
+  // Which of the two equally-weighted buttons was tapped, so each shows its own
+  // busy label instead of both claiming the booking.
+  const [flow, setFlow] = useState<"online" | "counter">("online");
   const [error, setError] = useState<string | null>(null);
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [welcomeBack, setWelcomeBack] = useState<string | null>(null);
+  // True only once the lookup has said to ask — a genuinely new family that
+  // hasn't answered "how did you hear about us?" before. The server decides
+  // (it can see both the billing backend and our customer records).
+  const [askHeardFrom, setAskHeardFrom] = useState(false);
+  const [heardFrom, setHeardFrom] = useState<string[]>([]);
+  // Discount code. `applied` is what the SERVER priced — the client only ever
+  // re-displays it, and /api/checkout re-checks it before the invoice is made.
+  const [codeInput, setCodeInput] = useState("");
+  const [applied, setApplied] = useState<AppliedDiscount | null>(null);
+  const [codeBusy, setCodeBusy] = useState(false);
+  const [codeError, setCodeError] = useState<string | null>(null);
+
+  // The phone this device's saved profile was restored for — shows the
+  // "Not you?" escape hatch while it still matches what's in the field.
+  const [restoredPhone, setRestoredPhone] = useState<string | null>(null);
 
   const canSubmit = name.trim().length >= 2 && /^[6-9]\d{9}$/.test(phone);
+
+  // Returning families on their own phone: restore the details saved after
+  // their last booking, so scanning the QR lands on a filled-in form. The
+  // touched refs stay false on purpose — the server lookup below still runs
+  // and refreshes anything stale from the backend.
+  useEffect(() => {
+    const saved = loadProfile();
+    if (!saved) return;
+    setPhone(saved.phone);
+    if (saved.name) setName(saved.name);
+    if (saved.kidNames) setKidNames(saved.kidNames);
+    setRestoredPhone(saved.phone);
+  }, []);
 
   // Returning customers: on a valid phone, prefill name + kids' names from
   // Swipe (their Child N custom fields). Debounced, silent on failure, and
@@ -49,6 +151,7 @@ export default function BookingForm() {
   useEffect(() => {
     if (!/^[6-9]\d{9}$/.test(phone)) {
       setWelcomeBack(null);
+      setAskHeardFrom(false);
       return;
     }
     let cancelled = false;
@@ -56,7 +159,13 @@ export default function BookingForm() {
       try {
         const res = await fetch(`/api/customer/lookup?phone=${phone}`);
         const data = await res.json();
-        if (cancelled || !data.found) return;
+        if (cancelled) return;
+        setAskHeardFrom(Boolean(data.askHeardFrom));
+        if (!data.found) {
+          // Clear any welcome-back note left by a previously typed number.
+          setWelcomeBack(null);
+          return;
+        }
         setWelcomeBack(typeof data.name === "string" ? data.name : "");
         if (!nameTouched.current && data.name) setName(data.name);
         if (!kidNamesTouched.current && Array.isArray(data.kidNames) && data.kidNames.length) {
@@ -72,6 +181,11 @@ export default function BookingForm() {
     };
   }, [phone]);
 
+  // Preload the Razorpay SDK so the payment sheet opens instantly on tap.
+  useEffect(() => {
+    if (PAYMENTS_ENABLED) void loadRazorpay();
+  }, []);
+
   // Re-submitting the same selection reuses the created invoice instead of
   // creating a duplicate in Swipe.
   const checkoutCache = useRef<{ key: string; data: CheckoutResponse } | null>(null);
@@ -82,12 +196,70 @@ export default function BookingForm() {
   // Distinguishes a tap from a scroll that starts on the button.
   const touchMoved = useRef(false);
 
-  const quote = useMemo(
+  const baseQuote = useMemo(
     () => computeQuote({ packageId, kids, extraAdults, childSocks, adultSocks }),
     [packageId, kids, extraAdults, childSocks, adultSocks]
   );
+  // Everything downstream — the sticky total, the breakdown, the pay button —
+  // reads this, so there's one number and it's always the one being charged.
+  const quote = useMemo(
+    () => (applied ? applyDiscount(baseQuote, applied) : baseQuote),
+    [baseQuote, applied]
+  );
 
-  const pay = async () => {
+  /**
+   * Ask the server what a code is worth. Nothing is redeemed by this — it's the
+   * live preview, and the code is only spent when the booking is created.
+   */
+  const checkCode = async (raw: string, opts?: { silent?: boolean }) => {
+    const code = raw.trim().toUpperCase();
+    if (!code) return;
+    if (!/^[6-9]\d{9}$/.test(phone)) {
+      setCodeError("Enter your mobile number first");
+      return;
+    }
+    if (!opts?.silent) setCodeBusy(true);
+    try {
+      const res = await fetch("/api/discounts/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code,
+          phone,
+          packageId,
+          kids,
+          extraAdults,
+          childSocks,
+          adultSocks,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setApplied(null);
+        setCodeError(data.error || "That code isn't valid");
+        return;
+      }
+      setApplied({ code: data.code, amount: data.amount });
+      setCodeError(null);
+    } catch {
+      // Offline or the check failed — never block the booking over a code.
+      if (!opts?.silent) setCodeError("Couldn't check that code right now");
+    } finally {
+      setCodeBusy(false);
+    }
+  };
+
+  // A percentage is worth a different amount once the family adds a kid or a
+  // pair of socks, so an applied code is re-priced whenever the selection moves.
+  // Silent: this is a correction, not something the customer asked for.
+  const appliedCodeName = applied?.code;
+  useEffect(() => {
+    if (!appliedCodeName) return;
+    void checkCode(appliedCodeName, { silent: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appliedCodeName, baseQuote.total]);
+
+  const pay = async (payOnline = true) => {
     // Button looks disabled until the form is valid but stays clickable, so a
     // tap surfaces the tip (and jumps to the field that needs filling).
     if (name.trim().length < 2) {
@@ -102,6 +274,7 @@ export default function BookingForm() {
     if (payInFlight.current) return;
     payInFlight.current = true;
     setError(null);
+    setFlow(payOnline ? "online" : "counter");
     setStatus("booking");
 
     try {
@@ -114,7 +287,13 @@ export default function BookingForm() {
         childSocks,
         adultSocks,
         kidNames: kidNames.split(",").map((n) => n.trim()).filter(Boolean),
+        ...(askHeardFrom && heardFrom.length ? { heardFrom } : {}),
+        // The server re-checks and spends the code; the amount above is only
+        // ever what the customer was shown.
+        ...(applied ? { discountCode: applied.code } : {}),
       };
+      // The key deliberately excludes payNow: whichever button was tapped, the
+      // same selection must reuse the same invoice, never create a second one.
       const cacheKey = JSON.stringify(payload);
 
       let checkout = checkoutCache.current?.key === cacheKey ? checkoutCache.current.data : null;
@@ -122,7 +301,7 @@ export default function BookingForm() {
         const res = await fetch("/api/checkout", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ ...payload, payNow: payOnline }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Something went wrong");
@@ -130,10 +309,79 @@ export default function BookingForm() {
         checkoutCache.current = { key: cacheKey, data: checkout };
       }
 
+      // Booked — remember this family on this device (their own phone, almost
+      // always), so the next visit's form comes prefilled.
+      saveProfile({ phone, name: name.trim(), kidNames });
+
       // Invoice created in Swipe. The confirmation screen is keyed by the
       // invoice number (without prefix) and fetches everything from the backend.
       const number = checkout.invoiceNumber.replace(/^\D+/, "");
-      router.push(`/success/${encodeURIComponent(number)}`);
+      const goSuccess = () => router.push(`/success/${encodeURIComponent(number)}`);
+
+      const order = checkout.payment;
+      if (!payOnline || checkout.skipPayment || !order) {
+        goSuccess();
+        return;
+      }
+
+      // Online payment: the booking is already saved. GATEWAY failures (script
+      // blocked, no order) still land on the confirmation screen — the
+      // customer chose to pay and we couldn't offer it. A deliberate cancel is
+      // different; see ondismiss below.
+      if (!(await loadRazorpay()) || !window.Razorpay) {
+        goSuccess();
+        return;
+      }
+
+      const { ref } = checkout;
+      setStatus("paying");
+      new window.Razorpay({
+        key: order.keyId,
+        amount: String(order.amountMinor),
+        currency: order.currency,
+        name: "Play Panda",
+        description: "Play session booking",
+        order_id: order.orderId,
+        prefill: { name: name.trim(), contact: phone },
+        notes: { invoice: checkout.invoiceNumber },
+        theme: { color: "#FF613A" },
+        handler: async (rzp) => {
+          // Paid. Ask the backend to verify the signature and mark the invoice
+          // paid; even if that fails, the money is collected — proceed to the
+          // confirmation screen rather than alarming the customer.
+          setStatus("verifying");
+          try {
+            await fetch("/api/payment/verify", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                ref,
+                orderId: order.orderId,
+                paymentId: rzp.razorpay_payment_id,
+                signature: rzp.razorpay_signature,
+                raw: rzp,
+              }),
+            });
+          } catch {
+            // Verified server-side on retry at the counter if needed.
+          }
+          goSuccess();
+        },
+        modal: {
+          // Closed without paying — a choice, not a confirmation. Back to the
+          // form with both buttons live: the invoice is already created and
+          // cached, so either button reuses it rather than double-booking.
+          // Silently confirming here would tell the family "booked, pay at
+          // the counter" when they may have been backing out entirely.
+          ondismiss: () => {
+            payInFlight.current = false;
+            setStatus("idle");
+            setError(
+              "Payment cancelled — nothing was charged. Try again, or pick Pay at counter."
+            );
+          },
+        },
+      }).open();
     } catch (err) {
       payInFlight.current = false;
       setStatus("idle");
@@ -207,7 +455,67 @@ export default function BookingForm() {
               filled in your details.
             </div>
           )}
+          {/* Shown while the field still holds the phone we restored from this
+              device — a borrowed phone needs a one-tap way out. */}
+          {restoredPhone !== null && phone === restoredPhone && (
+            <div className="mt-2 px-1 text-xs font-bold text-ink/40">
+              Not you?{" "}
+              <button
+                type="button"
+                onClick={() => {
+                  clearProfile();
+                  setRestoredPhone(null);
+                  setPhone("");
+                  setName("");
+                  setKidNames("");
+                  setWelcomeBack(null);
+                  setAskHeardFrom(false);
+                  nameTouched.current = false;
+                  kidNamesTouched.current = false;
+                }}
+                className="underline decoration-2 underline-offset-2 text-coral"
+              >
+                Start fresh
+              </button>
+            </div>
+          )}
         </section>
+
+        {/* First visit only: one optional tap that tells us which marketing
+            actually works. Returning families — and anyone who has already
+            answered once — never see it. */}
+        {askHeardFrom && (
+          <section className="rounded-chunk bg-white p-4 shadow-chunk">
+            <div className="text-base font-black text-ink">How did you hear about us?</div>
+            <div className="text-xs font-bold text-ink/50">Optional — tap any that apply</div>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {HEARD_FROM_SOURCES.map((source) => {
+                const selected = heardFrom.includes(source);
+                return (
+                  <label
+                    key={source}
+                    className={`cursor-pointer rounded-full px-3.5 py-2 text-sm font-black transition-colors ${
+                      selected ? "bg-green text-cream" : "bg-cream text-ink/60"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={() =>
+                        setHeardFrom((prev) =>
+                          selected ? prev.filter((s) => s !== source) : [...prev, source]
+                        )
+                      }
+                      className="sr-only"
+                    />
+                    {selected && "✓ "}
+                    {source}
+                  </label>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         {/* Package — the choice that drives the price, so it comes first. */}
         <section>
@@ -308,6 +616,83 @@ export default function BookingForm() {
             <Stepper value={adultSocks} min={0} max={30} onChange={setAdultSocks} />
           </div>
         </section>
+
+        {/* Discount code. Deliberately last and deliberately quiet: most
+            families don't have one, and a prominent empty code box makes
+            everyone else feel they're paying too much.
+            Behind NEXT_PUBLIC_DISCOUNT_CODES_ENABLED — the counter can still
+            discount an invoice on /ops while this is off. */}
+        {CUSTOMER_CODES_ENABLED && (
+        <section className="rounded-chunk bg-white p-4 shadow-chunk">
+          {applied ? (
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-base font-black text-green">
+                  {applied.code} applied 🎉
+                </div>
+                <div className="text-xs font-bold text-ink/50">
+                  {inr(applied.amount)} off your booking
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setApplied(null);
+                  setCodeInput("");
+                  setCodeError(null);
+                }}
+                className="shrink-0 rounded-full bg-cream px-3.5 py-2 text-sm font-black text-ink/60 transition-colors hover:bg-ink/10"
+              >
+                Remove
+              </button>
+            </div>
+          ) : (
+            <>
+              <label
+                htmlFor="discount-code"
+                className="text-base font-black text-ink"
+              >
+                Have a discount code?
+              </label>
+              <div className="mt-2 flex gap-2">
+                <input
+                  id="discount-code"
+                  type="text"
+                  value={codeInput}
+                  onChange={(e) => {
+                    setCodeInput(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 24));
+                    if (codeError) setCodeError(null);
+                  }}
+                  // Enter shouldn't submit anything — there's no form here, but
+                  // being explicit keeps it from ever booking by accident.
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void checkCode(codeInput);
+                    }
+                  }}
+                  placeholder="Enter code"
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  spellCheck={false}
+                  className="min-w-0 flex-1 rounded-2xl border-2 border-ink/10 bg-cream/60 px-4 py-3 text-base font-black tracking-wider text-ink outline-none placeholder:font-bold placeholder:tracking-normal placeholder:text-ink/30 focus:border-coral"
+                />
+                <button
+                  type="button"
+                  onClick={() => void checkCode(codeInput)}
+                  disabled={codeBusy || codeInput.trim().length === 0}
+                  className="shrink-0 rounded-full bg-ink px-5 text-sm font-black text-cream transition-all active:translate-y-[1px] disabled:opacity-30"
+                >
+                  {codeBusy ? "…" : "Apply"}
+                </button>
+              </div>
+              {codeError && (
+                <p className="mt-2 px-1 text-xs font-bold text-coral">{codeError}</p>
+              )}
+            </>
+          )}
+        </section>
+        )}
       </div>
 
       {/* Sticky pay bar */}
@@ -324,7 +709,10 @@ export default function BookingForm() {
         )}
         {showBreakdown && (
           <div className="mb-3 space-y-1.5 border-b border-dashed border-ink/10 pb-3">
-            {quote.lines.map((line) => (
+            {/* Line prices are shown BEFORE the discount, with the saving on its
+                own row — "₹699 each, ₹140 off" is what a family can check
+                against the price list, where silently cheaper lines aren't. */}
+            {baseQuote.lines.map((line) => (
               <div key={line.sku} className="flex justify-between text-sm font-bold text-ink/70">
                 <span>
                   {line.displayName} × {line.quantity}
@@ -332,23 +720,66 @@ export default function BookingForm() {
                 <span>{inr(line.lineTotal)}</span>
               </div>
             ))}
+            {quote.discount && (
+              <div className="flex justify-between text-sm font-black text-green">
+                <span>{quote.discount.code}</span>
+                <span>−{inr(quote.discount.amount)}</span>
+              </div>
+            )}
             <div className="pt-1 text-[11px] font-bold text-ink/40">Prices include GST</div>
           </div>
         )}
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => setShowBreakdown((v) => !v)}
-            className="text-left"
-          >
-            <div className="text-[11px] font-bold uppercase tracking-widest text-ink/50">
-              Total {showBreakdown ? "▾" : "▴"}
-            </div>
+        <button
+          type="button"
+          onClick={() => setShowBreakdown((v) => !v)}
+          className="text-left"
+        >
+          <div className="text-[11px] font-bold uppercase tracking-widest text-ink/50">
+            Total {showBreakdown ? "▾" : "▴"}
+          </div>
+          <div className="flex items-baseline gap-2">
             <div className="text-2xl font-black text-ink">{inr(quote.total)}</div>
-          </button>
+            {quote.discount && (
+              <div className="text-base font-black text-ink/35 line-through">
+                {inr(quote.gross)}
+              </div>
+            )}
+          </div>
+        </button>
+        {/* Two ways to book, weighted the same: paying now or at the counter is
+            the family's call, not something the layout should decide for them. */}
+        <div className="mt-2 flex gap-2.5">
+          {PAYMENTS_ENABLED && (
+            <button
+              type="button"
+              onClick={() => pay(false)}
+              // Same touchend treatment as the pay button — anything in this
+              // fixed bar shifts mid-gesture when the keyboard closes.
+              onTouchStart={() => {
+                touchMoved.current = false;
+              }}
+              onTouchMove={() => {
+                touchMoved.current = true;
+              }}
+              onTouchEnd={(e) => {
+                if (touchMoved.current || busy) return;
+                e.preventDefault();
+                pay(false);
+              }}
+              disabled={busy}
+              aria-disabled={!canSubmit}
+              className={`flex-1 touch-manipulation rounded-full border-2 py-4 text-base font-black transition-all duration-150 active:translate-y-[2px] ${
+                canSubmit
+                  ? "border-ink/15 bg-white text-ink shadow-btn hover:bg-cream/60 active:shadow-btn-pressed"
+                  : "border-ink/10 bg-white/50 text-ink/40"
+              } ${busy ? "opacity-60" : ""}`}
+            >
+              {flow === "counter" && status === "booking" ? "Booking…" : "Pay at counter"}
+            </button>
+          )}
           <button
             type="button"
-            onClick={pay}
+            onClick={() => pay()}
             // On mobile, tapping while the keyboard is open closes it and the
             // fixed bar shifts mid-gesture — the browser then drops the click.
             // touchend still targets the element the finger landed on, so it
@@ -366,20 +797,23 @@ export default function BookingForm() {
             }}
             disabled={busy}
             aria-disabled={!canSubmit}
-            className={`ml-auto inline-flex touch-manipulation items-center justify-center rounded-full px-8 py-4 text-base font-black text-cream transition-all duration-150 active:translate-y-[2px] ${
+            className={`flex-1 touch-manipulation rounded-full border-2 border-transparent py-4 text-base font-black text-cream transition-all duration-150 active:translate-y-[2px] ${
               canSubmit
                 ? "bg-coral shadow-btn hover:brightness-105 active:shadow-btn-pressed"
                 : "bg-coral/40"
             } ${busy ? "opacity-60" : ""}`}
           >
-            {status === "booking" && "Booking…"}
-            {status === "idle" && (PAYMENTS_ENABLED ? `Pay ${inr(quote.total)}` : "Book now")}
+            {flow === "online" && status === "booking" && "Booking…"}
+            {status === "paying" && "Paying…"}
+            {status === "verifying" && "Confirming…"}
+            {(status === "idle" || (flow === "counter" && status === "booking")) &&
+              (PAYMENTS_ENABLED ? `Pay ${inr(quote.total)}` : "Book now")}
           </button>
         </div>
       </div>
 
-      {/* Booking overlay */}
-      {status === "booking" && (
+      {/* Busy overlay (hidden while the Razorpay modal owns the screen) */}
+      {(status === "booking" || status === "verifying") && (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-cream/95 backdrop-blur-sm">
           <Image
             src="/MascotWithoutBG.png"
@@ -388,7 +822,9 @@ export default function BookingForm() {
             height={120}
             className="h-28 w-auto animate-bounce"
           />
-          <div className="mt-4 text-lg font-black text-ink">Creating your booking…</div>
+          <div className="mt-4 text-lg font-black text-ink">
+            {status === "booking" ? "Creating your booking…" : "Confirming your payment…"}
+          </div>
           <div className="text-sm font-bold text-ink/50">Just a moment</div>
         </div>
       )}

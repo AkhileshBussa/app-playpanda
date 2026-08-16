@@ -31,9 +31,9 @@ export async function GET() {
       removedAt: removals[s.id] ?? null,
     }));
 
-    // `checkouts` is echoed raw so the client can apply it to manual
-    // (localStorage-only) sessions the server doesn't know about.
-    return NextResponse.json({ sessions: out, checkouts });
+    // Each session already carries its own checkoutAt above; nothing on the
+    // board needs the raw day-map any more.
+    return NextResponse.json({ sessions: out });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     const needsSetup =

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { PAYMENT_METHODS, type PaymentMethod } from "@/lib/billing/types";
+import { formatInr } from "@/lib/pricing";
 import type { OpsSession } from "@/lib/ops/types";
 
 interface CollectPaymentSheetProps {
@@ -11,7 +12,8 @@ interface CollectPaymentSheetProps {
   onCollected: (session: OpsSession, amountDue: number) => void;
 }
 
-const inr = (n: number) => `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+// A discounted invoice can leave paise on the balance, so this shows them.
+const inr = formatInr;
 
 /**
  * Take a payment at the counter and record it against the invoice. The whole

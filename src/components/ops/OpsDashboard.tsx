@@ -4,11 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { computeOpsStatus, opsEndTime, type OpsSession, type OpsStatus } from "@/lib/ops/types";
 import { BAND_SLOTS, isBandWindow } from "@/lib/ops/bands";
-import { getManualVisits, manualToOpsSession, type ManualVisit } from "@/lib/ops/manual";
 import OpsSessionCard from "./OpsSessionCard";
-import AddVisit from "./AddVisit";
+import PunchVisitSheet from "./PunchVisitSheet";
 import InvoiceItemsSheet from "./InvoiceItemsSheet";
 import CollectPaymentSheet from "./CollectPaymentSheet";
+import ApplyDiscountSheet from "./ApplyDiscountSheet";
+import NewBookingSheet from "./NewBookingSheet";
 import SalesLine from "./SalesLine";
 
 type Filter = "all" | OpsStatus;
@@ -84,18 +85,21 @@ function pollDelay(at = new Date()): number {
 
 export default function OpsDashboard() {
   const [apiSessions, setApiSessions] = useState<OpsSession[]>([]);
-  const [checkouts, setCheckouts] = useState<Record<string, number>>({});
-  const [manualVisits, setManualVisits] = useState<ManualVisit[]>([]);
   const [overrides, setOverrides] = useState<Record<string, Override>>({});
   const [filter, setFilter] = useState<Filter>("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [needsSetup, setNeedsSetup] = useState(false);
-  const [showAddForm, setShowAddForm] = useState(false);
+  /** The membership-punch sheet — same flow as /members. */
+  const [showPunchVisit, setShowPunchVisit] = useState(false);
+  /** The counter's own booking form — creates a real Swipe invoice. */
+  const [showNewBooking, setShowNewBooking] = useState(false);
   /** Session whose invoice items are being viewed. */
   const [invoiceFor, setInvoiceFor] = useState<OpsSession | null>(null);
   /** Session we're taking payment for. */
   const [collectFor, setCollectFor] = useState<OpsSession | null>(null);
+  /** Session we're discounting before taking payment. */
+  const [discountFor, setDiscountFor] = useState<OpsSession | null>(null);
   /** What became of each removed booking's invoice, keyed by session id. Lives
    *  only for this page view — it's a receipt for the tap just made, not state
    *  the board needs to reload. */
@@ -122,7 +126,6 @@ export default function OpsDashboard() {
       if (!res.ok) throw new Error(data.error || "Failed to fetch");
       setNeedsSetup(false);
       setApiSessions(data.sessions);
-      setCheckouts(data.checkouts ?? {});
       if (pendingActions.current === 0) setOverrides({});
       setError(null);
     } catch (e) {
@@ -133,7 +136,6 @@ export default function OpsDashboard() {
   }, []);
 
   useEffect(() => {
-    setManualVisits(getManualVisits());
     fetchSessions();
 
     // Self-scheduling instead of setInterval, for two reasons that both matter
@@ -211,7 +213,7 @@ export default function OpsDashboard() {
         // Check-in is when the customer is at the counter, so if they still owe
         // money, put the payment in front of the manager rather than waiting
         // for them to spot the badge.
-        if (session.amountDue > 0 && !session.isManual) setCollectFor(session);
+        if (session.amountDue > 0) setCollectFor(session);
         return null;
       } catch {
         return "Network error — please retry";
@@ -295,11 +297,10 @@ export default function OpsDashboard() {
     [mutate, fetchSessions]
   );
 
-  // Merge API + manual sessions, apply optimistic overrides.
-  const allSessions = [
-    ...apiSessions,
-    ...manualVisits.map((v) => manualToOpsSession(v, checkouts)),
-  ].map((s) => {
+  // Every session on the board is a real invoice now — membership visits
+  // included, since punching one creates its ₹0 invoice in Swipe. Only the
+  // optimistic overrides sit on top.
+  const allSessions = apiSessions.map((s) => {
     const ov = overrides[s.id];
     return ov ? { ...s, ...ov } : s;
   });
@@ -442,8 +443,26 @@ export default function OpsDashboard() {
                 {kidsInside} <span className="font-bold opacity-60">inside</span>
               </span>
             </div>
-            <div className="ml-auto">
+            {/* Booking a walk-in is the counter's most frequent action, so it
+                lives in the sticky header rather than in a floating "+" in the
+                corner: always in reach, always named, and next to the takings
+                it adds to. Punching a member's visit sits beside it as the
+                quieter of the two — same flow as /members, put here so nobody
+                has to leave the board and come back for it. */}
+            <div className="ml-auto flex items-center gap-2">
               <SalesLine />
+              <button
+                onClick={() => setShowPunchVisit(true)}
+                className="whitespace-nowrap rounded-full bg-white px-3.5 py-2 text-sm font-black text-ink/60 shadow-btn transition-all hover:text-ink active:translate-y-0.5 active:shadow-btn-pressed"
+              >
+                🎟 Punch visit
+              </button>
+              <button
+                onClick={() => setShowNewBooking(true)}
+                className="whitespace-nowrap rounded-full bg-coral px-4 py-2 text-sm font-black text-cream shadow-btn transition-all hover:brightness-105 active:translate-y-0.5 active:shadow-btn-pressed"
+              >
+                + New booking
+              </button>
             </div>
           </div>
           {/* Wristband key, up only during the weekend rush that uses it — a
@@ -517,6 +536,7 @@ export default function OpsDashboard() {
                     onRemove={handleRemove}
                     onShowInvoice={setInvoiceFor}
                     onCollect={setCollectFor}
+                    onDiscount={setDiscountFor}
                   />
                 ))}
               </div>
@@ -563,14 +583,14 @@ export default function OpsDashboard() {
         )}
       </div>
 
-      {/* Floating add button — manual membership visit */}
-      <button
-        onClick={() => setShowAddForm(true)}
-        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-coral text-3xl leading-none text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
-        title="Add membership visit"
-      >
-        +
-      </button>
+      {showNewBooking && (
+        <NewBookingSheet
+          onClose={() => setShowNewBooking(false)}
+          // The invoice is in Swipe now; the next poll would find it anyway,
+          // but the card should appear while the family is still at the desk.
+          onCreated={fetchSessions}
+        />
+      )}
 
       {invoiceFor && (
         <InvoiceItemsSheet session={invoiceFor} onClose={() => setInvoiceFor(null)} />
@@ -592,11 +612,34 @@ export default function OpsDashboard() {
         />
       )}
 
-      <AddVisit
-        open={showAddForm}
-        onClose={() => setShowAddForm(false)}
-        onAdded={() => setManualVisits(getManualVisits())}
-      />
+      {discountFor && (
+        <ApplyDiscountSheet
+          session={discountFor}
+          onClose={() => setDiscountFor(null)}
+          onApplied={(session, net) => {
+            setDiscountFor(null);
+            // The invoice was re-priced, so what's due changed. Show it at once
+            // and let the next poll confirm it against Swipe.
+            setOverrides((prev) => ({
+              ...prev,
+              [session.id]: { ...prev[session.id], amountDue: net, paid: net <= 0 },
+            }));
+            fetchSessions();
+            // Straight into collecting: the discount was the negotiation, and
+            // taking the money is what happens next in the same conversation.
+            if (net > 0) setCollectFor({ ...session, amountDue: net });
+          }}
+        />
+      )}
+
+      {showPunchVisit && (
+        <PunchVisitSheet
+          onClose={() => setShowPunchVisit(false)}
+          // The punch created a ₹0 invoice in Swipe; pick it up now rather than
+          // waiting for the next poll, so the card is there as the kid walks in.
+          onPunched={fetchSessions}
+        />
+      )}
     </div>
   );
 }

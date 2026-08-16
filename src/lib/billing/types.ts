@@ -31,8 +31,16 @@ export interface InvoiceLine {
 export interface CreateBookingInput {
   customer: BookingCustomer;
   lines: InvoiceLine[];
-  /** Short code the customer shows and the counter validates against the invoice. */
-  validationCode: string;
+  /**
+   * Short code the customer shows and the counter validates against the invoice.
+   *
+   * Omitted for a booking made AT the counter: the code exists so staff can
+   * check a family in against a booking made elsewhere, and its presence on the
+   * invoice is exactly what tells the ops monitor to hold the session at
+   * "waiting" until someone validates it. A walk-in is already standing there,
+   * so it gets no code and its timer runs from the invoice.
+   */
+  validationCode?: string;
 }
 
 export interface Booking {
@@ -43,6 +51,14 @@ export interface Booking {
    * client and into recordPayment(); callers must treat it as an opaque token.
    */
   ref: string;
+  /**
+   * The provider's stable document handle (Swipe: new_hash_id — the same value
+   * the ops board uses as session id). Stored as the invoice mirror's single
+   * provider reference; not for calling the provider with.
+   */
+  docRef?: string;
+  /** The provider's customer handle (Swipe: party id), when known. */
+  customerRef?: string | null;
 }
 
 export interface RecordPaymentInput {
@@ -92,9 +108,62 @@ export interface CollectPaymentInput {
   invoiceNumber: string;
   /** Amount collected now, INR. May be part of the outstanding balance. */
   amount: number;
-  method: PaymentMethod;
+  /** The counter UI offers PAYMENT_METHODS; the gateway webhook also passes
+   *  labels like "Net Banking"/"Wallet", which Swipe records as given. */
+  method: PaymentMethod | (string & {});
   /** UPI/card reference, if the counter noted one. */
   transactionRef?: string;
+}
+
+/**
+ * Discount an invoice that already exists — the family who asked at the counter
+ * after booking on the app. The amount is what comes off the CURRENT total.
+ */
+export interface ApplyInvoiceDiscountInput {
+  /** Human invoice number, e.g. "INV-1712". */
+  invoiceNumber: string;
+  /** ₹ to take off. Refused if it exceeds the invoice total. */
+  amount: number;
+  /** Code, or "MANUAL" for a one-off grant — written onto the invoice. */
+  label: string;
+  /** Employee who granted it, recorded on the invoice for the books. */
+  byName: string;
+  /** Free-text reason, on one-off grants. */
+  reason?: string;
+}
+
+/**
+ * Why an invoice couldn't be discounted. Like cancellation, this refuses rather
+ * than throws whenever money has already moved or the invoice isn't one we can
+ * safely rewrite — nobody should have to unpick a half-applied discount.
+ *
+ * `unsupported` covers an invoice carrying products outside the booking
+ * catalogue (a counter-built invoice, a membership punch): we can't re-price
+ * lines we don't know the tax treatment of, so we don't try.
+ */
+export type DiscountRefusalReason =
+  | "paid"
+  | "part-paid"
+  | "not-found"
+  | "too-large"
+  | "unsupported";
+
+export interface ApplyInvoiceDiscountResult {
+  applied: boolean;
+  /** Set when `applied` is false. */
+  refused?: DiscountRefusalReason;
+  /**
+   * The invoice the discount landed on. MAY DIFFER from the input when the
+   * provider can't rewrite a document in place — callers must use this value
+   * from here on rather than the number they passed in.
+   */
+  invoiceNumber?: string;
+  /** Total before the discount, ₹. */
+  gross?: number;
+  /** ₹ actually taken off (derived from the rewritten lines). */
+  discount?: number;
+  /** New invoice total, ₹. */
+  net?: number;
 }
 
 /** Ask to cancel the invoice behind a play session that never happened. */
@@ -143,6 +212,21 @@ export interface MembershipSaleInvoice {
   at: number;
   /** The membership-plan lines on this invoice. */
   planLines: Array<{ sku: string; name: string; quantity: number }>;
+}
+
+/**
+ * A gateway payment order the browser opens checkout with. Created on our own
+ * Razorpay account (see lib/razorpay.ts) — the billing provider only hears
+ * about the payment after the fact, via recordPayment/collectPayment.
+ */
+export interface PaymentOrder {
+  /** Gateway order id, e.g. Razorpay "order_...". */
+  orderId: string;
+  /** Public key id for the gateway's browser checkout. */
+  keyId: string;
+  /** Amount in the smallest currency unit (paise for INR). */
+  amountMinor: number;
+  currency: string;
 }
 
 /** Returning-customer details, for prefilling the booking form. */
@@ -248,6 +332,17 @@ export interface BillingProvider {
   collectPayment(input: CollectPaymentInput): Promise<PaymentResult>;
 
   /**
+   * Discount an invoice that already exists, by re-pricing its lines. Used by
+   * the counter when a family asks for a discount after booking on the app.
+   *
+   * Refuses rather than throws whenever discounting would be wrong: anything
+   * collected against it, or lines this provider can't safely re-price.
+   * Implementations MUST re-check that against the provider rather than
+   * trusting the caller — the board that asks may be up to 30 seconds stale.
+   */
+  applyInvoiceDiscount(input: ApplyInvoiceDiscountInput): Promise<ApplyInvoiceDiscountResult>;
+
+  /**
    * Cancel the invoice behind a session that never happened — a no-show cleared
    * off the ops board.
    *
@@ -264,8 +359,11 @@ export interface BillingProvider {
   /**
    * Punch one membership visit: upsert the customer and create the ₹0 invoice
    * with the punch product. Shows up on the ops monitor as a membership session.
+   * docRef/customerRef carry the same mirror handles as createBooking.
    */
-  createMembershipPunch(input: MembershipPunchInput): Promise<{ invoiceNumber: string }>;
+  createMembershipPunch(
+    input: MembershipPunchInput
+  ): Promise<{ invoiceNumber: string; docRef?: string; customerRef?: string | null }>;
 
   /**
    * Today's invoices carrying a membership-plan (sale) line, newest first —

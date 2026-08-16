@@ -28,8 +28,6 @@ export interface OpsSession {
   checkoutAt: number | null;
   /** Taken off today's board as a no-show, unix ms — the invoice is untouched. */
   removedAt?: number | null;
-  /** True for locally-added membership visits (no invoice behind them). */
-  isManual?: boolean;
 }
 
 export type OpsStatus = "waiting" | "active" | "expiring" | "expired" | "checked_out";

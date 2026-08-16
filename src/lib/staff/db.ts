@@ -1,13 +1,17 @@
 /**
  * Staff-tools store — employees, attendance, leave, maintenance issues and
- * customer feedback, in the same Postgres as memberships.
+ * customer feedback. Tables are defined in ../db/schema.ts with the rest of
+ * the database.
  *
  * Expenses are deliberately absent: those live in Swipe (see ./expenses.ts) so
  * the books stay in one place, exactly as when the counter billed them by hand.
+ * ("How did you hear about us?" used to live here too — it's a column on
+ * customers now; see ../customers/db.ts.)
  */
 
 import { randomUUID } from "node:crypto";
-import { getPool, onceSchema } from "../pg";
+import { getPool } from "../pg";
+import { ensureSchema, ms, msOrNull, TS } from "../db/schema";
 import type {
   AttendanceEntry,
   AttendanceFix,
@@ -24,81 +28,6 @@ import type {
   MaintenanceIssue,
 } from "./types";
 
-const ensureSchema = onceSchema(`
-  CREATE TABLE IF NOT EXISTS employees (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    phone TEXT NOT NULL DEFAULT '',
-    role TEXT NOT NULL DEFAULT 'staff',
-    pin_hash TEXT NOT NULL,
-    active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at BIGINT NOT NULL
-  );
-
-  -- One row per employee per IST day; the unique index is what stops a double
-  -- check-in when two taps race.
-  CREATE TABLE IF NOT EXISTS attendance (
-    id TEXT PRIMARY KEY,
-    employee_id TEXT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
-    work_date TEXT NOT NULL,
-    checkin_at BIGINT NOT NULL,
-    checkin_lat DOUBLE PRECISION NOT NULL,
-    checkin_lng DOUBLE PRECISION NOT NULL,
-    checkin_accuracy_m DOUBLE PRECISION NOT NULL,
-    checkin_distance_m DOUBLE PRECISION,
-    checkout_at BIGINT,
-    checkout_lat DOUBLE PRECISION,
-    checkout_lng DOUBLE PRECISION,
-    checkout_accuracy_m DOUBLE PRECISION,
-    checkout_distance_m DOUBLE PRECISION
-  );
-  CREATE UNIQUE INDEX IF NOT EXISTS attendance_employee_day_idx
-    ON attendance (employee_id, work_date);
-  CREATE INDEX IF NOT EXISTS attendance_day_idx ON attendance (work_date);
-
-  CREATE TABLE IF NOT EXISTS leave_requests (
-    id TEXT PRIMARY KEY,
-    employee_id TEXT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
-    from_date TEXT NOT NULL,
-    to_date TEXT NOT NULL,
-    leave_type TEXT NOT NULL,
-    reason TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'pending',
-    decided_by TEXT NOT NULL DEFAULT '',
-    decided_at BIGINT,
-    decision_note TEXT NOT NULL DEFAULT '',
-    created_at BIGINT NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS leave_employee_idx ON leave_requests (employee_id);
-  CREATE INDEX IF NOT EXISTS leave_range_idx ON leave_requests (from_date, to_date);
-
-  CREATE TABLE IF NOT EXISTS maintenance_issues (
-    id TEXT PRIMARY KEY,
-    kind TEXT NOT NULL,
-    title TEXT NOT NULL,
-    details TEXT NOT NULL DEFAULT '',
-    priority TEXT NOT NULL DEFAULT 'normal',
-    status TEXT NOT NULL DEFAULT 'open',
-    photo_url TEXT NOT NULL DEFAULT '',
-    reported_by_name TEXT NOT NULL DEFAULT '',
-    created_at BIGINT NOT NULL,
-    resolved_at BIGINT,
-    resolution_note TEXT NOT NULL DEFAULT ''
-  );
-  CREATE INDEX IF NOT EXISTS issues_status_idx ON maintenance_issues (status);
-
-  CREATE TABLE IF NOT EXISTS feedback (
-    id TEXT PRIMARY KEY,
-    rating INTEGER NOT NULL,
-    improve TEXT NOT NULL DEFAULT '',
-    name TEXT NOT NULL DEFAULT '',
-    phone TEXT NOT NULL DEFAULT '',
-    sent_to_google BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at BIGINT NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS feedback_created_idx ON feedback (created_at);
-`);
-
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 // ── Employees ────────────────────────────────────────────────────────────────
@@ -110,7 +39,7 @@ function toEmployee(r: any): Employee {
     phone: r.phone,
     role: r.role as EmployeeRole,
     active: r.active,
-    createdAt: Number(r.created_at),
+    createdAt: ms(r.created_at),
   };
 }
 
@@ -146,9 +75,9 @@ export async function createEmployee(input: {
 }): Promise<Employee> {
   await ensureSchema();
   const { rows } = await getPool().query(
-    `INSERT INTO employees (id, name, phone, role, pin_hash, active, created_at)
-     VALUES ($1,$2,$3,$4,$5,TRUE,$6) RETURNING *`,
-    [randomUUID(), input.name, input.phone, input.role, input.pinHash, Date.now()]
+    `INSERT INTO employees (id, name, phone, role, pin_hash, active)
+     VALUES ($1,$2,$3,$4,$5,TRUE) RETURNING *`,
+    [randomUUID(), input.name, input.phone, input.role, input.pinHash]
   );
   return toEmployee(rows[0]);
 }
@@ -164,7 +93,8 @@ export async function updateEmployee(
        phone = COALESCE($3, phone),
        role = COALESCE($4, role),
        active = COALESCE($5, active),
-       pin_hash = COALESCE($6, pin_hash)
+       pin_hash = COALESCE($6, pin_hash),
+       last_updated_at = now()
      WHERE id = $1 RETURNING *`,
     [id, patch.name ?? null, patch.phone ?? null, patch.role ?? null, patch.active ?? null, patch.pinHash ?? null]
   );
@@ -188,9 +118,9 @@ function toAttendance(r: any): AttendanceEntry {
     employeeId: r.employee_id,
     employeeName: r.employee_name ?? "",
     workDate: r.work_date,
-    checkinAt: Number(r.checkin_at),
+    checkinAt: ms(r.checkin_at),
     checkin: fix(r.checkin_lat, r.checkin_lng, r.checkin_accuracy_m, r.checkin_distance_m),
-    checkoutAt: r.checkout_at == null ? null : Number(r.checkout_at),
+    checkoutAt: msOrNull(r.checkout_at),
     checkout:
       r.checkout_at == null
         ? null
@@ -199,7 +129,7 @@ function toAttendance(r: any): AttendanceEntry {
 }
 
 const ATTENDANCE_SELECT = `
-  SELECT a.*, e.name AS employee_name FROM attendance a
+  SELECT a.*, a.work_date::text AS work_date, e.name AS employee_name FROM attendance a
   JOIN employees e ON e.id = a.employee_id
 `;
 
@@ -209,7 +139,7 @@ export async function getAttendance(
 ): Promise<AttendanceEntry | null> {
   await ensureSchema();
   const { rows } = await getPool().query(
-    `${ATTENDANCE_SELECT} WHERE a.employee_id = $1 AND a.work_date = $2`,
+    `${ATTENDANCE_SELECT} WHERE a.employee_id = $1 AND a.work_date = $2::date`,
     [employeeId, workDate]
   );
   return rows[0] ? toAttendance(rows[0]) : null;
@@ -236,9 +166,9 @@ export async function checkIn(input: {
     `INSERT INTO attendance (
        id, employee_id, work_date, checkin_at,
        checkin_lat, checkin_lng, checkin_accuracy_m, checkin_distance_m
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+     ) VALUES ($1,$2,$3::date,${TS("$4")},$5,$6,$7,$8)
      ON CONFLICT (employee_id, work_date) DO NOTHING
-     RETURNING *`,
+     RETURNING id`,
     [
       randomUUID(), input.employeeId, input.workDate, input.at,
       input.fix.lat, input.fix.lng, input.fix.accuracyM, input.fix.distanceM,
@@ -246,7 +176,8 @@ export async function checkIn(input: {
   );
   if (!rows[0]) throw new AttendanceError("already_in", "You've already checked in today");
   const entry = await getAttendance(input.employeeId, input.workDate);
-  return entry ?? toAttendance(rows[0]);
+  if (!entry) throw new Error("attendance vanished after insert");
+  return entry;
 }
 
 export async function checkOut(input: {
@@ -258,10 +189,11 @@ export async function checkOut(input: {
   await ensureSchema();
   const { rows } = await getPool().query(
     `UPDATE attendance SET
-       checkout_at = $3, checkout_lat = $4, checkout_lng = $5,
-       checkout_accuracy_m = $6, checkout_distance_m = $7
-     WHERE employee_id = $1 AND work_date = $2 AND checkout_at IS NULL
-     RETURNING *`,
+       checkout_at = ${TS("$3")}, checkout_lat = $4, checkout_lng = $5,
+       checkout_accuracy_m = $6, checkout_distance_m = $7,
+       last_updated_at = now()
+     WHERE employee_id = $1 AND work_date = $2::date AND checkout_at IS NULL
+     RETURNING id`,
     [
       input.employeeId, input.workDate, input.at,
       input.fix.lat, input.fix.lng, input.fix.accuracyM, input.fix.distanceM,
@@ -274,13 +206,14 @@ export async function checkOut(input: {
       : new AttendanceError("not_in", "Check in first");
   }
   const entry = await getAttendance(input.employeeId, input.workDate);
-  return entry ?? toAttendance(rows[0]);
+  if (!entry) throw new Error("attendance vanished after update");
+  return entry;
 }
 
 export async function listAttendanceForDay(workDate: string): Promise<AttendanceEntry[]> {
   await ensureSchema();
   const { rows } = await getPool().query(
-    `${ATTENDANCE_SELECT} WHERE a.work_date = $1 ORDER BY a.checkin_at`,
+    `${ATTENDANCE_SELECT} WHERE a.work_date = $1::date ORDER BY a.checkin_at`,
     [workDate]
   );
   return rows.map(toAttendance);
@@ -292,7 +225,7 @@ export async function listAttendanceBetween(
 ): Promise<AttendanceEntry[]> {
   await ensureSchema();
   const { rows } = await getPool().query(
-    `${ATTENDANCE_SELECT} WHERE a.work_date BETWEEN $1 AND $2
+    `${ATTENDANCE_SELECT} WHERE a.work_date BETWEEN $1::date AND $2::date
      ORDER BY a.work_date DESC, a.checkin_at`,
     [fromDate, toDate]
   );
@@ -337,14 +270,15 @@ function toLeave(r: any): LeaveRequest {
     reason: r.reason,
     status: r.status as LeaveStatus,
     decidedBy: r.decided_by,
-    decidedAt: r.decided_at == null ? null : Number(r.decided_at),
+    decidedAt: msOrNull(r.decided_at),
     decisionNote: r.decision_note,
-    createdAt: Number(r.created_at),
+    createdAt: ms(r.created_at),
   };
 }
 
 const LEAVE_SELECT = `
-  SELECT l.*, e.name AS employee_name FROM leave_requests l
+  SELECT l.*, l.from_date::text AS from_date, l.to_date::text AS to_date,
+    e.name AS employee_name FROM leave_requests l
   JOIN employees e ON e.id = l.employee_id
 `;
 
@@ -359,15 +293,13 @@ export async function createLeave(input: {
   const { rows } = await getPool().query(
     `WITH inserted AS (
        INSERT INTO leave_requests (
-         id, employee_id, from_date, to_date, leave_type, reason, status, created_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,'pending',$7) RETURNING *
+         id, employee_id, from_date, to_date, leave_type, reason, status
+       ) VALUES ($1,$2,$3::date,$4::date,$5,$6,'pending') RETURNING *
      )
-     SELECT inserted.*, e.name AS employee_name FROM inserted
+     SELECT inserted.*, inserted.from_date::text AS from_date,
+       inserted.to_date::text AS to_date, e.name AS employee_name FROM inserted
      JOIN employees e ON e.id = inserted.employee_id`,
-    [
-      randomUUID(), input.employeeId, input.fromDate, input.toDate,
-      input.leaveType, input.reason, Date.now(),
-    ]
+    [randomUUID(), input.employeeId, input.fromDate, input.toDate, input.leaveType, input.reason]
   );
   return toLeave(rows[0]);
 }
@@ -399,7 +331,7 @@ export async function listLeaves(opts?: {
 export async function listLeavesCovering(day: string): Promise<LeaveRequest[]> {
   await ensureSchema();
   const { rows } = await getPool().query(
-    `${LEAVE_SELECT} WHERE $1 BETWEEN l.from_date AND l.to_date`,
+    `${LEAVE_SELECT} WHERE $1::date BETWEEN l.from_date AND l.to_date`,
     [day]
   );
   return rows.map(toLeave);
@@ -415,12 +347,14 @@ export async function decideLeave(
   const { rows } = await getPool().query(
     `WITH updated AS (
        UPDATE leave_requests
-       SET status = $2, decided_by = $3, decided_at = $4, decision_note = $5
+       SET status = $2, decided_by = $3, decided_at = now(), decision_note = $4,
+         last_updated_at = now()
        WHERE id = $1 RETURNING *
      )
-     SELECT updated.*, e.name AS employee_name FROM updated
+     SELECT updated.*, updated.from_date::text AS from_date,
+       updated.to_date::text AS to_date, e.name AS employee_name FROM updated
      JOIN employees e ON e.id = updated.employee_id`,
-    [id, status, decidedBy, Date.now(), note]
+    [id, status, decidedBy, note]
   );
   return rows[0] ? toLeave(rows[0]) : null;
 }
@@ -437,8 +371,8 @@ function toIssue(r: any): MaintenanceIssue {
     status: r.status as IssueStatus,
     photoUrl: r.photo_url,
     reportedByName: r.reported_by_name,
-    createdAt: Number(r.created_at),
-    resolvedAt: r.resolved_at == null ? null : Number(r.resolved_at),
+    createdAt: ms(r.created_at),
+    resolvedAt: msOrNull(r.resolved_at),
     resolutionNote: r.resolution_note,
   };
 }
@@ -454,12 +388,9 @@ export async function createIssue(input: {
   await ensureSchema();
   const { rows } = await getPool().query(
     `INSERT INTO maintenance_issues (
-       id, kind, title, details, priority, status, photo_url, reported_by_name, created_at
-     ) VALUES ($1,$2,$3,$4,$5,'open',$6,$7,$8) RETURNING *`,
-    [
-      randomUUID(), input.kind, input.title, input.details, input.priority,
-      input.photoUrl, input.reportedByName, Date.now(),
-    ]
+       id, kind, title, details, priority, status, photo_url, reported_by_name
+     ) VALUES ($1,$2,$3,$4,$5,'open',$6,$7) RETURNING *`,
+    [randomUUID(), input.kind, input.title, input.details, input.priority, input.photoUrl, input.reportedByName]
   );
   return toIssue(rows[0]);
 }
@@ -486,10 +417,11 @@ export async function updateIssueStatus(
   const { rows } = await getPool().query(
     `UPDATE maintenance_issues
      SET status = $2,
-         resolved_at = CASE WHEN $2 = 'resolved' THEN $3 ELSE NULL END,
-         resolution_note = $4
+         resolved_at = CASE WHEN $2 = 'resolved' THEN now() ELSE NULL END,
+         resolution_note = $3,
+         last_updated_at = now()
      WHERE id = $1 RETURNING *`,
-    [id, status, Date.now(), note]
+    [id, status, note]
   );
   return rows[0] ? toIssue(rows[0]) : null;
 }
@@ -504,7 +436,7 @@ function toFeedback(r: any): Feedback {
     name: r.name,
     phone: r.phone,
     sentToGoogle: r.sent_to_google,
-    createdAt: Number(r.created_at),
+    createdAt: ms(r.created_at),
   };
 }
 
@@ -517,12 +449,9 @@ export async function createFeedback(input: {
 }): Promise<Feedback> {
   await ensureSchema();
   const { rows } = await getPool().query(
-    `INSERT INTO feedback (id, rating, improve, name, phone, sent_to_google, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [
-      randomUUID(), input.rating, input.improve, input.name,
-      input.phone, input.sentToGoogle, Date.now(),
-    ]
+    `INSERT INTO feedback (id, rating, improve, name, phone, sent_to_google)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [randomUUID(), input.rating, input.improve, input.name, input.phone, input.sentToGoogle]
   );
   return toFeedback(rows[0]);
 }
@@ -538,7 +467,8 @@ export async function updateFeedback(
        improve = COALESCE($2, improve),
        name = COALESCE($3, name),
        phone = COALESCE($4, phone),
-       sent_to_google = COALESCE($5, sent_to_google)
+       sent_to_google = COALESCE($5, sent_to_google),
+       last_updated_at = now()
      WHERE id = $1 RETURNING *`,
     [id, patch.improve ?? null, patch.name ?? null, patch.phone ?? null, patch.sentToGoogle ?? null]
   );

@@ -57,11 +57,23 @@ export interface QuoteLine {
   lineTotal: number;
 }
 
+/** A discount that's already been priced — see applyDiscount. */
+export interface AppliedDiscount {
+  /** The code as typed, or "MANUAL" for a one-off counter grant. */
+  code: string;
+  /** ₹ off. Computed server-side; the client only ever displays it. */
+  amount: number;
+}
+
 export interface Quote {
   lines: QuoteLine[];
-  /** Tax-inclusive grand total, INR */
+  /** Tax-inclusive grand total, INR — already net of `discount` when set. */
   total: number;
   packageLabel: string;
+  /** Total before any discount, INR. Equals `total` when nothing was applied. */
+  gross: number;
+  /** Set only when a discount was applied. */
+  discount?: AppliedDiscount;
 }
 
 export function getPackage(packageId: PackageId) {
@@ -123,13 +135,67 @@ export function computeQuote(sel: BookingSelection): Quote {
     });
   }
 
+  const total = lines.reduce((sum, l) => sum + l.lineTotal, 0);
   return {
     lines,
-    total: lines.reduce((sum, l) => sum + l.lineTotal, 0),
+    total,
+    gross: total,
     packageLabel: `${pkg.label} · ${sel.kids} kid${sel.kids > 1 ? "s" : ""}`,
   };
 }
 
 export function round2(n: number) {
   return Math.round(n * 100) / 100;
+}
+
+/**
+ * Money, the way it should read on screen: "₹699" for whole rupees, "₹1,188.30"
+ * once there are paise. Discounts are the reason this exists — every catalogue
+ * price is a whole number, but a percentage off almost never is, and a total
+ * shown as "₹1,188.3" reads like a bug to the family being asked to pay it.
+ */
+export function formatInr(n: number): string {
+  const paise = Math.abs(Math.round(n * 100) % 100) > 0;
+  return `₹${n.toLocaleString("en-IN", {
+    minimumFractionDigits: paise ? 2 : 0,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+/**
+ * Re-price a quote with a discount, by scaling every line's tax-inclusive unit
+ * price by the same ratio.
+ *
+ * Why scale the lines rather than subtract a lump off the total: the catalogue
+ * spans two GST slabs (18% on play and extra adults, 5% on adult socks). A
+ * single deduction at the bottom would have to be apportioned across those
+ * slabs by someone, and doing it here — proportionally, at the line — keeps the
+ * taxable value of each slab correct by construction. It's also the treatment a
+ * discount given at the time of sale gets: recorded on the invoice, reducing
+ * the taxable value, rather than a post-sale adjustment.
+ *
+ * The returned `discount.amount` is derived from the summed lines, not from the
+ * requested figure, so the invoice, the gateway order and the ledger can never
+ * disagree by a paisa. It can therefore land a few paise off the nominal
+ * discount; that's the price of the three of them always matching.
+ */
+export function applyDiscount(quote: Quote, discount: AppliedDiscount): Quote {
+  const gross = quote.gross;
+  const off = Math.min(Math.max(discount.amount, 0), gross);
+  if (gross <= 0 || off <= 0) return quote;
+
+  const ratio = (gross - off) / gross;
+  const lines = quote.lines.map((line) => {
+    const priceWithTax = round2(line.priceWithTax * ratio);
+    return { ...line, priceWithTax, lineTotal: round2(priceWithTax * line.quantity) };
+  });
+  const total = round2(lines.reduce((sum, l) => sum + l.lineTotal, 0));
+
+  return {
+    ...quote,
+    lines,
+    total,
+    gross,
+    discount: { code: discount.code, amount: round2(gross - total) },
+  };
 }
