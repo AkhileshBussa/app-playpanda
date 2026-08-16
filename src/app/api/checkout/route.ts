@@ -8,6 +8,7 @@ import { setHeardFrom, upsertCustomer } from "@/lib/customers/db";
 import { quoteMirrorLines, recordInvoice } from "@/lib/invoices/db";
 import { createPendingBooking, pendingConfigured } from "@/lib/bookings/pending";
 import { dbConfigured } from "@/lib/pg";
+import { bumpBoard } from "@/lib/ops/state";
 import {
   attachInvoice,
   evaluateCode,
@@ -224,6 +225,8 @@ export async function POST(req: Request) {
         console.error("heard-from save failed:", err);
       }
     }
+
+    await bumpBoard();
 
     return NextResponse.json({
       pending: false,

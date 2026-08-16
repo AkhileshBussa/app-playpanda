@@ -9,6 +9,7 @@ import {
 import { dbConfigured } from "@/lib/pg";
 import { attachPayment, attachPaymentByOrder } from "@/lib/discounts/db";
 import { recordPaymentMirror } from "@/lib/invoices/db";
+import { bumpBoard } from "@/lib/ops/state";
 import { fulfilPendingBooking } from "@/lib/bookings/pending";
 
 export const dynamic = "force-dynamic";
@@ -125,6 +126,7 @@ export async function POST(req: Request) {
         console.error("failed to link webhook payment to redemption:", err)
       );
     }
+    await bumpBoard();
     return NextResponse.json({ ok: true, invoiceNumber, amountDue: result.amountDue });
   } catch (err) {
     // Unknown invoice, already-settled, or over-collection are permanent:

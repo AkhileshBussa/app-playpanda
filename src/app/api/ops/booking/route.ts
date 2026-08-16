@@ -6,6 +6,7 @@ import { PAYMENT_METHODS } from "@/lib/billing/types";
 import { computeQuote, PACKAGES, type PackageId } from "@/lib/pricing";
 import { quoteMirrorLines, recordInvoice, recordPaymentMirror } from "@/lib/invoices/db";
 import { dbConfigured } from "@/lib/pg";
+import { bumpBoard } from "@/lib/ops/state";
 
 export const dynamic = "force-dynamic";
 
@@ -94,6 +95,8 @@ export async function POST(req: Request) {
       lines: quoteMirrorLines(quote.lines),
     }).catch((err) => console.error("counter invoice mirror failed:", err));
   }
+
+  await bumpBoard();
 
   // Payment is a second call, and it can fail on its own. The invoice exists
   // either way, so a failure here reports "booked but not recorded" rather than

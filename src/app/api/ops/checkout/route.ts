@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { isOpsAuthed } from "@/lib/ops/auth";
-import { setCheckout, clearCheckout } from "@/lib/ops/state";
+import { bumpBoard, setCheckout, clearCheckout } from "@/lib/ops/state";
 import { stampInvoiceSession } from "@/lib/invoices/db";
 import { dbConfigured } from "@/lib/pg";
 
@@ -28,6 +28,7 @@ export async function POST(req: Request) {
   try {
     const at = Date.now();
     await setCheckout(id, at);
+    await bumpBoard();
     // Durable copy on the invoice mirror; Redis stays the day's fast path.
     if (dbConfigured()) {
       await stampInvoiceSession("checkout", id, at).catch((err) =>
@@ -51,6 +52,7 @@ export async function DELETE(req: Request) {
 
   try {
     await clearCheckout(id);
+    await bumpBoard();
     if (dbConfigured()) {
       await stampInvoiceSession("checkout", id, null).catch((err) =>
         console.error("check-out unstamp failed:", err)

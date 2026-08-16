@@ -189,6 +189,13 @@ export default function BookingForm() {
     if (PAYMENTS_ENABLED) void loadRazorpay();
   }, []);
 
+  // A stale banner ("payment cancelled…") must not outlive the selection it
+  // was about — any change to the booking means the customer has moved on.
+  // Typing in the contact fields already clears it via their onChange.
+  useEffect(() => {
+    setError(null);
+  }, [packageId, kids, extraAdults, childSocks, adultSocks, kidNames]);
+
   // Re-submitting the same selection reuses the created invoice instead of
   // creating a duplicate in Swipe.
   const checkoutCache = useRef<{ key: string; data: CheckoutResponse } | null>(null);

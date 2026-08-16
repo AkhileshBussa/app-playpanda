@@ -26,6 +26,7 @@ import type { QuoteLine } from "../pricing";
 import { quoteMirrorLines, recordInvoice, recordPaymentMirror } from "../invoices/db";
 import { setHeardFrom } from "../customers/db";
 import { attachInvoice, redeem } from "../discounts/db";
+import { bumpBoard } from "../ops/state";
 
 /** Everything needed to build the invoice once the money is in. */
 export interface PendingBookingPayload {
@@ -224,6 +225,8 @@ export async function fulfilPendingBooking(input: FulfilInput): Promise<FulfilRe
         console.error("pay-first heard-from save failed:", err)
       );
     }
+
+    await bumpBoard();
 
     return { ok: true, invoiceNumber: booking.invoiceNumber, alreadyDone: false };
   } catch (err) {

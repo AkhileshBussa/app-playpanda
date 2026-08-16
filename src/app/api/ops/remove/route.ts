@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { billing } from "@/lib/billing";
 import { isOpsAuthed } from "@/lib/ops/auth";
-import { setRemoval, clearRemoval } from "@/lib/ops/state";
+import { bumpBoard, setRemoval, clearRemoval } from "@/lib/ops/state";
 import { dbConfigured } from "@/lib/pg";
 import { releaseForInvoice } from "@/lib/discounts/db";
 import { markInvoiceCancelled, stampInvoiceSession } from "@/lib/invoices/db";
@@ -48,6 +48,7 @@ export async function POST(req: Request) {
   const removedAt = Date.now();
   try {
     await setRemoval(id, removedAt);
+    await bumpBoard();
   } catch (err) {
     console.error("remove failed:", err);
     return NextResponse.json({ error: "Could not remove booking" }, { status: 502 });
@@ -94,6 +95,7 @@ export async function DELETE(req: Request) {
 
   try {
     await clearRemoval(id);
+    await bumpBoard();
     if (dbConfigured()) {
       await stampInvoiceSession("removed", id, null).catch((err) =>
         console.error("removal unstamp failed:", err)

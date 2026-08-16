@@ -10,6 +10,7 @@ import {
 import { dbConfigured } from "@/lib/pg";
 import { attachPaymentByOrder } from "@/lib/discounts/db";
 import { recordPaymentMirror } from "@/lib/invoices/db";
+import { bumpBoard } from "@/lib/ops/state";
 import { fulfilPendingBooking } from "@/lib/bookings/pending";
 
 const verifySchema = z.object({
@@ -108,6 +109,7 @@ export async function POST(req: Request) {
         console.error("failed to link payment to redemption:", err)
       );
     }
+    await bumpBoard();
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error("online payment verification failed:", err);

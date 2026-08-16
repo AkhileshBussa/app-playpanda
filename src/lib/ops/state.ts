@@ -108,3 +108,27 @@ export const getRemovals = () => readDayHash(REMOVALS_PREFIX);
 export const setRemoval = (sessionId: string, at = Date.now()) =>
   setDayHash(REMOVALS_PREFIX, sessionId, at);
 export const clearRemoval = (sessionId: string) => clearDayHash(REMOVALS_PREFIX, sessionId);
+
+// ── Board nudge ──────────────────────────────────────────────────────────────
+// A cheap "something changed" signal: every app-side write that alters the
+// session board (a payment fulfilled, a booking made, a check-in) bumps this
+// key, and open boards check it far more often than they can afford to poll
+// Swipe. Best-effort on both ends — the regular poll still catches everything.
+
+const NUDGE_KEY = "board:nudge";
+
+export async function bumpBoard(): Promise<void> {
+  try {
+    await redisCommand(["SET", NUDGE_KEY, String(Date.now())]);
+  } catch (err) {
+    console.error("board nudge failed:", err);
+  }
+}
+
+export async function getBoardNudge(): Promise<string> {
+  try {
+    return String((await redisCommand<string | null>(["GET", NUDGE_KEY])) ?? "0");
+  } catch {
+    return "0";
+  }
+}
