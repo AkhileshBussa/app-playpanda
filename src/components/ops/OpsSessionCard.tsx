@@ -265,6 +265,16 @@ export default function OpsSessionCard({
           {session.parentName}
           {session.phone && ` · ${session.phone}`}
         </div>
+
+        {/* Waiting cards lead with this line up top; every other state used to
+            lose the creation time (and invoice number) the moment the timer
+            took over — which is exactly what the counter needs in a "we've
+            been here since X" conversation. */}
+        {status !== "waiting" && (
+          <div className="truncate text-xs font-bold leading-tight text-ink/40">
+            Booked {formatTime(session.bookedAt)} · {session.invoiceNumber}
+          </div>
+        )}
       </div>
 
       {/* Money owed is collectable from the card, whatever the play state —
