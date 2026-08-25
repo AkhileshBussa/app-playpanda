@@ -16,6 +16,7 @@ import type {
   ApplyInvoiceDiscountResult,
   Booking,
   BookingDetails,
+  BookingEditState,
   BillingProvider,
   CancelInvoiceInput,
   CancelInvoiceResult,
@@ -23,6 +24,9 @@ import type {
   CollectPaymentInput,
   CustomerProfile,
   DaySales,
+  EditBookingInput,
+  EditBookingResult,
+  EditRefusalReason,
   InvoiceLine,
   PaymentResult,
   MembershipPunchInput,
@@ -651,7 +655,13 @@ interface SessionInvoice {
    * new one (verified live on INV-1886, 2026-08-12).
    */
   docId: number;
+  /** The serial's numeric part, when the payload carries it; 0 when it didn't
+   *  (edits fall back to the digits of the serial). */
+  docNumber: number;
   serialNumber: string;
+  /** Invoice notes — carries the kid names and, on pay-first bookings, the
+   *  gateway ids. An edit must re-send these or they're lost. */
+  notes: string;
   bookedAt: number; // unix ms
   paid: boolean;
   amountDue: number;
@@ -794,7 +804,62 @@ const CATALOG_TAX = new Map<string, { taxRatePercent: number; itemType: "Product
 ]);
 
 /**
- * Re-post an existing invoice with discounted line prices.
+ * Catalogue list prices by sku — how an edit tells a clean invoice from a
+ * discounted one. Discounts scale every unit price off-list by the same ratio,
+ * so any line priced away from the catalogue means someone granted money off,
+ * and a counter edit (which re-prices at catalogue rates) would silently undo
+ * that grant while its ledger entry stood. Those are refused instead.
+ */
+const CATALOG_PRICE = new Map<string, number>([
+  ...PACKAGES.map((p) => [p.sku, p.pricePerKid] as [string, number]),
+  [EXTRA_ADULT.sku, EXTRA_ADULT.price],
+  [SOCKS.child.sku, SOCKS.child.price],
+  [SOCKS.adult.sku, SOCKS.adult.price],
+]);
+
+type EditableItemsCheck =
+  | { ok: true; quantities: Map<string, number> }
+  | { ok: false; refused: EditRefusalReason };
+
+/**
+ * Can this invoice's lines be rebuilt from the booking form? Yes only when
+ * every line is a catalogue product at its catalogue price — anything else
+ * (membership punches, extra-time lines, hand-built items, discounted prices)
+ * can't round-trip through the form's selection and is refused with a reason
+ * the counter can act on.
+ *
+ * Two different play packages on one invoice split into separate board cards,
+ * and a form that holds one package can't re-express them — same refusal as a
+ * shared invoice, because that's what it is.
+ */
+function checkEditableItems(items: SessionItem[]): EditableItemsCheck {
+  const quantities = new Map<string, number>();
+  for (const item of items) {
+    // A zero-total twin of a billed line is a Swipe edit artifact (see the
+    // session parser's identical skip), not something the customer bought.
+    if (
+      item.totalAmount === 0 &&
+      items.some((o) => o !== item && o.sku === item.sku && o.totalAmount > 0)
+    ) {
+      continue;
+    }
+    const listPrice = CATALOG_PRICE.get(item.sku);
+    if (listPrice == null || item.quantity <= 0) return { ok: false, refused: "unsupported" };
+    if (Math.abs(item.totalAmount / item.quantity - listPrice) > 0.01) {
+      return { ok: false, refused: "discounted" };
+    }
+    quantities.set(item.sku, (quantities.get(item.sku) ?? 0) + item.quantity);
+  }
+
+  const packageSkus = PACKAGES.filter((p) => quantities.has(p.sku));
+  if (packageSkus.length > 1) return { ok: false, refused: "shared-invoice" };
+  if (packageSkus.length === 0) return { ok: false, refused: "unsupported" };
+  return { ok: true, quantities };
+}
+
+/**
+ * Re-post an existing invoice with different line prices or lines — the one
+ * mechanism behind both counter discounts and booking edits.
  *
  * Swipe has no discrete "edit" endpoint — a document is edited by POSTing the
  * whole thing back to v3/doc/create with its NUMERIC document id set. That id is
@@ -817,7 +882,7 @@ const CATALOG_TAX = new Map<string, { taxRatePercent: number; itemType: "Product
  * mints a new document, the stray is deleted again and this reports failure —
  * a refusal the counter can act on, never a duplicate left in the books.
  */
-async function rewriteInvoiceDiscounted(opts: {
+async function rewriteInvoice(opts: {
   /** Swipe's numeric document id — what makes this an edit. */
   docId: number;
   docNumber: number;
@@ -855,8 +920,8 @@ async function rewriteInvoiceDiscounted(opts: {
 
   const res = await swipeCall<CreateResp>("v3/doc", "create", payload, { allowFailure: true });
   if (res.success === false) {
-    console.error("Swipe discount edit failed:", JSON.stringify(res));
-    throw new Error(res.message || "Swipe rejected the discount edit");
+    console.error("Swipe invoice edit failed:", JSON.stringify(res));
+    throw new Error(res.message || "Swipe rejected the invoice edit");
   }
 
   // Came back under a different serial ⇒ Swipe created a second document rather
@@ -865,8 +930,8 @@ async function rewriteInvoiceDiscounted(opts: {
   if (serial && serial !== opts.serialNumber) {
     const stray = res.new_hash_id || res.hash_id;
     if (stray) {
-      await deleteSwipeDoc(stray, "Auto-removed: discount edit created a duplicate").catch((err) =>
-        console.error("failed to clean up duplicate invoice from discount edit:", err)
+      await deleteSwipeDoc(stray, "Auto-removed: invoice edit created a duplicate").catch((err) =>
+        console.error("failed to clean up duplicate invoice from edit:", err)
       );
     }
     throw new Error("Swipe created a new invoice instead of editing it");
@@ -922,7 +987,9 @@ function normalizeSessionInvoice(
   return {
     id: String(inv.new_hash_id ?? inv.hash_id ?? fallbackId),
     docId: Number(inv.id ?? 0),
+    docNumber: Number(inv.doc_number ?? 0),
     serialNumber: String(inv.serial_number ?? ""),
+    notes: String(inv.notes ?? ""),
     bookedAt,
     paid,
     // What's actually left to collect — Swipe tracks partial payments here.
@@ -995,6 +1062,28 @@ function readMembershipOverrides(customFields: { name: string; value: string }[]
     else if (dim === "KID" || dim === "KIDS") kidsPerPlay = n;
   }
   return { hoursPerPlay, kidsPerPlay };
+}
+
+/**
+ * Kid names from the invoice's own notes ("Kids: A, B", one `·`-joined segment
+ * among possibly several) — empty when the notes don't carry one.
+ *
+ * The notes are per-BOOKING truth where the customer's Child fields are
+ * per-family: a returning parent bringing a different sibling, or a booking
+ * whose names were fixed by an edit, is right in the notes and stale in the
+ * fields. That's why sessions read this first.
+ */
+function kidNamesFromNotes(notes: string): string[] {
+  const segment = notes
+    .split("·")
+    .map((s) => s.trim())
+    .find((s) => /^kids\s*:/i.test(s));
+  if (!segment) return [];
+  return segment
+    .replace(/^kids\s*:/i, "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 /** Kid names from "Child N" custom fields, falling back to company_name parsing. */
@@ -1082,7 +1171,11 @@ function parseInvoiceToSessions(inv: SessionInvoice): TodaySession[] {
   const totalKidCount = groups.reduce((s, g) => s + g.quantity, 0);
   const perKidExtra = totalKidCount > 0 ? extraMinutes / totalKidCount : 0;
 
-  const allKidNames = parseSessionKidNames(inv.partyCustomFields, inv.companyName);
+  const fromNotes = kidNamesFromNotes(inv.notes);
+  const allKidNames =
+    fromNotes.length > 0
+      ? fromNotes
+      : parseSessionKidNames(inv.partyCustomFields, inv.companyName);
 
   // Single-session invoices keep the bare doc id (matches pp-billing's Redis
   // checkout state); split invoices suffix #i so each card has its own state.
@@ -1293,7 +1386,7 @@ export const swipeBilling: BillingProvider = {
       return { applied: false, refused: "unsupported", invoiceNumber: serial };
     }
 
-    const { total } = await rewriteInvoiceDiscounted({
+    const { total } = await rewriteInvoice({
       docId: invoice.docId,
       docNumber: Number(row.doc_number ?? 0) || parseInt(serial.replace(/\D/g, ""), 10) || 0,
       serialNumber: serial,
@@ -1309,6 +1402,107 @@ export const swipeBilling: BillingProvider = {
       gross,
       discount: round2(gross - total),
       net: total,
+    };
+  },
+
+  async getBookingEditState(sessionId: string): Promise<BookingEditState> {
+    // A split invoice's cards are `<hash>#i` — one invoice, several sessions.
+    // An edit rewrites the whole document, so it would rewrite every card at
+    // once; those stay Swipe's to change.
+    if (sessionId.includes("#")) {
+      return { editable: false, refused: "shared-invoice", invoiceNumber: "" };
+    }
+
+    const invoice = await getSessionInvoice(sessionId);
+    if (!invoice) return { editable: false, refused: "not-found", invoiceNumber: "" };
+    // No numeric id ⇒ nothing to edit in place, and a create would duplicate.
+    if (!invoice.docId) {
+      return { editable: false, refused: "unsupported", invoiceNumber: invoice.serialNumber };
+    }
+
+    const check = checkEditableItems(invoice.items);
+    if (!check.ok) {
+      return { editable: false, refused: check.refused, invoiceNumber: invoice.serialNumber };
+    }
+
+    return {
+      editable: true,
+      invoiceNumber: invoice.serialNumber,
+      quantitiesBySku: Object.fromEntries(check.quantities),
+      total: invoice.total,
+      amountDue: invoice.amountDue,
+    };
+  },
+
+  async editBooking(input: EditBookingInput): Promise<EditBookingResult> {
+    if (input.sessionId.includes("#")) {
+      return { edited: false, refused: "shared-invoice" };
+    }
+
+    // Re-read rather than trusting the board or the read that prefilled the
+    // sheet: between them and this call someone can have collected money or
+    // applied a discount, and both change what an edit may do.
+    const invoice = await getSessionInvoice(input.sessionId);
+    if (!invoice) return { edited: false, refused: "not-found" };
+    if (!invoice.docId) {
+      return { edited: false, refused: "unsupported", invoiceNumber: invoice.serialNumber };
+    }
+
+    const check = checkEditableItems(invoice.items);
+    if (!check.ok) {
+      return { edited: false, refused: check.refused, invoiceNumber: invoice.serialNumber };
+    }
+
+    // Payments stay attached through the rewrite, so the floor under the new
+    // total is what's already been taken — pricing below that would leave a
+    // negative balance in the books, which is a refund conversation, not an
+    // edit. At or above it, the difference simply becomes the new amount due.
+    const collected = round2(Math.max(0, invoice.total - invoice.amountDue));
+    const newTotal = round2(input.lines.reduce((s, l) => s + l.priceWithTax * l.quantity, 0));
+    if (newTotal + 0.005 < collected) {
+      return { edited: false, refused: "refund-needed", invoiceNumber: invoice.serialNumber };
+    }
+
+    // Same reuse-or-create the booking flow does: a changed phone re-bills the
+    // invoice to the party that number belongs to; no party is edited in place.
+    const partyId = await ensureCustomer(input.customer);
+
+    // Rebuild the notes' kid list; keep every other segment verbatim — on a
+    // pay-first booking that includes the gateway ids, which must survive.
+    const kids = input.customer.kidNames.map((n) => n.trim()).filter(Boolean);
+    const preserved = invoice.notes
+      .split("·")
+      .map((s) => s.trim())
+      .filter((s) => s && !/^kids\s*:/i.test(s));
+    const notes = [kids.length ? `Kids: ${kids.join(", ")}` : "", ...preserved]
+      .filter(Boolean)
+      .join(" · ");
+
+    const { total } = await rewriteInvoice({
+      docId: invoice.docId,
+      docNumber:
+        invoice.docNumber || parseInt(invoice.serialNumber.replace(/\D/g, ""), 10) || 0,
+      serialNumber: invoice.serialNumber,
+      partyId,
+      notes,
+      validationCode: invoice.validationCode,
+      lines: input.lines,
+    });
+
+    // What's owed now is Swipe's call (it nets recorded payments against the
+    // new total); the local subtraction is only the fallback for a failed read.
+    const after = await findTransactionBySerial(invoice.serialNumber).catch(() => null);
+    const amountDue = after
+      ? pendingFromRow(after.row)
+      : Math.max(0, round2(total - collected));
+
+    return {
+      edited: true,
+      invoiceNumber: invoice.serialNumber,
+      total,
+      amountDue,
+      customerRef: partyId != null ? String(partyId) : null,
+      docRef: invoice.id,
     };
   },
 

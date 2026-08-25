@@ -16,6 +16,7 @@ import {
 import { HEARD_FROM_SOURCES } from "@/lib/heardFrom";
 import { CUSTOMER_CODES_ENABLED } from "@/lib/discounts/enabled";
 import { clearProfile, loadProfile, saveProfile } from "@/lib/profile";
+import StepperIcon from "@/components/StepperIcon";
 
 const inr = formatInr;
 
@@ -887,9 +888,9 @@ function Stepper({
         aria-label="Decrease"
         onClick={() => onChange(Math.max(min, value - 1))}
         disabled={value <= min}
-        className="grid h-9 w-9 place-items-center rounded-full bg-white text-lg font-black text-ink shadow-[0_3px_0_rgba(0,0,0,0.08)] transition-transform active:translate-y-[1px] disabled:opacity-40"
+        className="grid h-9 w-9 place-items-center rounded-full bg-white text-ink shadow-[0_3px_0_rgba(0,0,0,0.08)] transition-transform active:translate-y-[1px] disabled:opacity-40"
       >
-        −
+        <StepperIcon kind="minus" />
       </button>
       <span className="w-8 text-center text-base font-black tabular-nums text-ink">{value}</span>
       <button
@@ -897,9 +898,9 @@ function Stepper({
         aria-label="Increase"
         onClick={() => onChange(Math.min(max, value + 1))}
         disabled={value >= max}
-        className="grid h-9 w-9 place-items-center rounded-full bg-green text-lg font-black text-cream shadow-[0_3px_0_rgba(0,0,0,0.12)] transition-transform active:translate-y-[1px] disabled:opacity-40"
+        className="grid h-9 w-9 place-items-center rounded-full bg-green text-cream shadow-[0_3px_0_rgba(0,0,0,0.12)] transition-transform active:translate-y-[1px] disabled:opacity-40"
       >
-        +
+        <StepperIcon kind="plus" />
       </button>
     </div>
   );

@@ -9,6 +9,7 @@ import PunchVisitSheet from "./PunchVisitSheet";
 import InvoiceItemsSheet from "./InvoiceItemsSheet";
 import CollectPaymentSheet from "./CollectPaymentSheet";
 import ApplyDiscountSheet from "./ApplyDiscountSheet";
+import EditBookingSheet from "./EditBookingSheet";
 import NewBookingSheet from "./NewBookingSheet";
 import SalesLine from "./SalesLine";
 
@@ -109,6 +110,8 @@ export default function OpsDashboard() {
   const [collectFor, setCollectFor] = useState<OpsSession | null>(null);
   /** Session we're discounting before taking payment. */
   const [discountFor, setDiscountFor] = useState<OpsSession | null>(null);
+  /** Session whose booking is being edited — the creation form, reopened. */
+  const [editFor, setEditFor] = useState<OpsSession | null>(null);
   /** What became of each removed booking's invoice, keyed by session id. Lives
    *  only for this page view — it's a receipt for the tap just made, not state
    *  the board needs to reload. */
@@ -577,6 +580,7 @@ export default function OpsDashboard() {
                     onShowInvoice={setInvoiceFor}
                     onCollect={setCollectFor}
                     onDiscount={setDiscountFor}
+                    onEdit={setEditFor}
                   />
                 ))}
               </div>
@@ -668,6 +672,24 @@ export default function OpsDashboard() {
             // Straight into collecting: the discount was the negotiation, and
             // taking the money is what happens next in the same conversation.
             if (net > 0) setCollectFor({ ...session, amountDue: net });
+          }}
+        />
+      )}
+
+      {editFor && (
+        <EditBookingSheet
+          session={editFor}
+          onClose={() => setEditFor(null)}
+          onSaved={(session, amountDue) => {
+            setEditFor(null);
+            // The invoice was rewritten, so the balance (and possibly the kid
+            // count and timer) changed. Show the money at once; the refetch
+            // right behind it brings everything else.
+            setOverrides((prev) => ({
+              ...prev,
+              [session.id]: { ...prev[session.id], amountDue, paid: amountDue <= 0 },
+            }));
+            fetchSessions();
           }}
         />
       )}

@@ -10,6 +10,7 @@ import {
   type PackageId,
 } from "@/lib/pricing";
 import { PAYMENT_METHODS, type PaymentMethod } from "@/lib/billing/types";
+import StepperIcon from "@/components/StepperIcon";
 
 interface NewBookingSheetProps {
   onClose: () => void;
@@ -419,8 +420,9 @@ export default function NewBookingSheet({ onClose, onCreated }: NewBookingSheetP
   );
 }
 
-/** Label above, −/+ either side of the number: readable at a glance on a tablet. */
-function CounterStepper({
+/** Label above, −/+ either side of the number: readable at a glance on a tablet.
+ *  Exported for the edit sheet, which lays out the same selection. */
+export function CounterStepper({
   label,
   value,
   min,
@@ -442,9 +444,9 @@ function CounterStepper({
           aria-label={`Decrease ${label}`}
           onClick={() => onChange(Math.max(min, value - 1))}
           disabled={value <= min}
-          className="grid h-9 w-9 place-items-center rounded-full bg-cream text-lg font-black text-ink transition-transform active:translate-y-[1px] disabled:opacity-30"
+          className="grid h-9 w-9 place-items-center rounded-full bg-cream text-ink transition-transform active:translate-y-[1px] disabled:opacity-30"
         >
-          −
+          <StepperIcon kind="minus" />
         </button>
         <span className="text-xl font-black tabular-nums text-ink">{value}</span>
         <button
@@ -452,9 +454,9 @@ function CounterStepper({
           aria-label={`Increase ${label}`}
           onClick={() => onChange(Math.min(max, value + 1))}
           disabled={value >= max}
-          className="grid h-9 w-9 place-items-center rounded-full bg-green text-lg font-black text-cream transition-transform active:translate-y-[1px] disabled:opacity-30"
+          className="grid h-9 w-9 place-items-center rounded-full bg-green text-cream transition-transform active:translate-y-[1px] disabled:opacity-30"
         >
-          +
+          <StepperIcon kind="plus" />
         </button>
       </div>
     </div>
