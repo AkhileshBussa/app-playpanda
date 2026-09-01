@@ -45,6 +45,8 @@ interface OpsSessionCardProps {
   onCollect?: (session: OpsSession) => void;
   /** Discount this session's invoice before collecting. */
   onDiscount?: (session: OpsSession) => void;
+  /** Reopen the booking's details for editing — everything the creation form set. */
+  onEdit?: (session: OpsSession) => void;
 }
 
 export default function OpsSessionCard({
@@ -56,6 +58,7 @@ export default function OpsSessionCard({
   onShowInvoice,
   onCollect,
   onDiscount,
+  onEdit,
 }: OpsSessionCardProps) {
   const [now, setNow] = useState(Date.now());
   const status = computeOpsStatus(session, now);
@@ -120,6 +123,21 @@ export default function OpsSessionCard({
     !session.paid &&
     session.amountDue > 0 &&
     !session.id.includes("#");
+
+  // Editing reopens the creation form over this invoice. Not for membership
+  // punches (that form never made them) and not for split invoices (one
+  // document behind several cards — an edit rewrites them all at once). The
+  // server re-checks both; hiding the link just spares the dead end. Quiet by
+  // design: fixing a booking is rare next to checking one in.
+  const editLink =
+    onEdit && !session.isMembership && !session.id.includes("#") && status !== "checked_out" ? (
+      <button
+        onClick={() => onEdit(session)}
+        className="mt-1.5 w-full text-xs font-bold text-ink/40 underline-offset-2 hover:text-ink/70 hover:underline"
+      >
+        Edit booking
+      </button>
+    ) : null;
 
   return (
     <div
@@ -265,6 +283,16 @@ export default function OpsSessionCard({
           {session.parentName}
           {session.phone && ` · ${session.phone}`}
         </div>
+
+        {/* Waiting cards lead with this line up top; every other state used to
+            lose the creation time (and invoice number) the moment the timer
+            took over — which is exactly what the counter needs in a "we've
+            been here since X" conversation. */}
+        {status !== "waiting" && (
+          <div className="truncate text-xs font-bold leading-tight text-ink/40">
+            Booked {formatTime(session.bookedAt)} · {session.invoiceNumber}
+          </div>
+        )}
       </div>
 
       {/* Money owed is collectable from the card, whatever the play state —
@@ -297,10 +325,12 @@ export default function OpsSessionCard({
       {status === "waiting" ? (
         <>
           <CheckInForm session={session} onCheckIn={onCheckIn} />
+          {editLink}
           {/* No-shows: an online booking nobody turned up for sits on the board
               all evening, and on a busy Saturday the Waiting count is what tells
               the counter how many kids are still expected. Removing is the one
-              way a card can leave without ever having been here. */}
+              way a card can leave without ever having been here. Last in the
+              strip — it's the last thing anyone should reach for. */}
           {onRemove && (
             <RemoveButton
               cancelsInvoice={cancelsInvoice}
@@ -337,6 +367,7 @@ export default function OpsSessionCard({
               Undo check-in
             </button>
           )}
+          {editLink}
         </>
       )}
     </div>

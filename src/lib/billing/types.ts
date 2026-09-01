@@ -41,6 +41,13 @@ export interface CreateBookingInput {
    * so it gets no code and its timer runs from the invoice.
    */
   validationCode?: string;
+  /**
+   * Set when the booking was already paid online before the invoice is being
+   * created (the pay-first flow). The adapter records the gateway identifiers
+   * on the invoice itself, so whoever reads it in the billing backend can
+   * cross-check the money without leaving the document.
+   */
+  paidVia?: { gateway: string; orderId: string; paymentId: string };
 }
 
 export interface Booking {
@@ -164,6 +171,70 @@ export interface ApplyInvoiceDiscountResult {
   discount?: number;
   /** New invoice total, ₹. */
   net?: number;
+}
+
+/**
+ * Why a booking couldn't be edited from the counter. Same philosophy as
+ * discounts and cancellation: refuse rather than throw whenever a rewrite
+ * would be wrong, and let the counter read why.
+ *
+ * `discounted` is its own reason (not `unsupported`) because the fix differs:
+ * an edit re-prices every line at catalogue rates, which would silently undo a
+ * discount someone granted — and leave the discount ledger claiming money off
+ * an invoice that no longer shows it.
+ *
+ * `refund-needed` refuses an edit that would price the booking below what has
+ * already been collected — the books can't hold a negative balance, so the
+ * refund is a conversation and a Swipe correction, not a board tap.
+ */
+export type EditRefusalReason =
+  | "not-found"
+  | "shared-invoice"
+  | "unsupported"
+  | "discounted"
+  | "refund-needed";
+
+/**
+ * The booking behind one session card, shaped for the edit sheet: catalogue
+ * quantities by sku, and the money state that bounds what an edit may do.
+ */
+export interface BookingEditState {
+  editable: boolean;
+  /** Set when `editable` is false. */
+  refused?: EditRefusalReason;
+  /** Empty when the invoice couldn't be read at all. */
+  invoiceNumber: string;
+  /** Billed quantity per catalogue sku (pricing.ts skus). */
+  quantitiesBySku?: Record<string, number>;
+  /** Invoice grand total, ₹. */
+  total?: number;
+  /** Still outstanding, ₹. total − amountDue = what's been collected. */
+  amountDue?: number;
+}
+
+/** Replace a booking's selection — the counter's post-creation edit. */
+export interface EditBookingInput {
+  /** The ops session handle (same id check-in state and cancellation use). */
+  sessionId: string;
+  /** The customer as (re-)entered — a changed phone re-bills to that party. */
+  customer: BookingCustomer;
+  /** The full new line set; the edit is a whole replacement, never a patch. */
+  lines: InvoiceLine[];
+}
+
+export interface EditBookingResult {
+  edited: boolean;
+  /** Set when `edited` is false. */
+  refused?: EditRefusalReason;
+  invoiceNumber?: string;
+  /** New invoice total, ₹. */
+  total?: number;
+  /** Still outstanding after the edit, ₹ — payments already taken stay put. */
+  amountDue?: number;
+  /** The provider's customer handle after the edit (a phone change repoints it). */
+  customerRef?: string | null;
+  /** The provider's stable doc handle (unchanged by the edit); mirror key. */
+  docRef?: string;
 }
 
 /** Ask to cancel the invoice behind a play session that never happened. */
@@ -341,6 +412,29 @@ export interface BillingProvider {
    * trusting the caller — the board that asks may be up to 30 seconds stale.
    */
   applyInvoiceDiscount(input: ApplyInvoiceDiscountInput): Promise<ApplyInvoiceDiscountResult>;
+
+  /**
+   * Read the booking behind a session card as catalogue quantities, for the
+   * edit sheet's prefill — refusing (editable: false) whenever an edit
+   * couldn't safely land: shared invoices, non-catalogue lines, discounted
+   * prices. The edit itself re-checks all of this; this read exists so the
+   * counter hears "can't be edited, and why" before retyping anything.
+   */
+  getBookingEditState(sessionId: string): Promise<BookingEditState>;
+
+  /**
+   * Rewrite the booking behind a session card with a new selection — the
+   * counter fixing a booking after it was made (wrong package, another kid,
+   * a typo'd phone). A whole replacement: the caller sends the full new line
+   * set and customer, exactly as a creation would.
+   *
+   * Payments already recorded stay attached; the new balance is whatever the
+   * new total leaves outstanding. Refuses rather than throws whenever the
+   * rewrite would be wrong (see EditRefusalReason), and MUST re-check against
+   * the provider rather than trusting the caller — the board that asks may be
+   * up to 30 seconds stale.
+   */
+  editBooking(input: EditBookingInput): Promise<EditBookingResult>;
 
   /**
    * Cancel the invoice behind a session that never happened — a no-show cleared

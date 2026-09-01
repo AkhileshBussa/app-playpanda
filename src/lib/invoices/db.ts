@@ -316,6 +316,94 @@ export async function applyDiscountMirror(
   }
 }
 
+export interface EditInvoiceMirrorInput {
+  /** The provider doc handle behind the card (the unsuffixed ops session id). */
+  swipeRef: string;
+  /** Who the booking now belongs to — a phone change repoints the invoice. */
+  customer: UpsertCustomerInput;
+  /** New invoice total, ₹. Edits are refused on discounted invoices, so after
+   *  one the gross and the net are the same catalogue-priced figure. */
+  totalInr: number;
+  /** The full new line set — an edit is a whole replacement, in Swipe and here. */
+  lines: MirrorLine[];
+}
+
+/**
+ * Re-shape the mirror after a counter edit rewrote the booking: the customer,
+ * the totals, and the lines, replaced wholesale. Payments stay put and the
+ * status is recomputed from what's been paid against the new total — an
+ * upgrade on a paid booking correctly drops it back to part_paid. Returns
+ * false when the invoice was never mirrored (pre-ledger); nothing to update.
+ */
+export async function editInvoiceMirror(input: EditInvoiceMirrorInput): Promise<boolean> {
+  await ensureSchema();
+  const { customer } = await upsertCustomer(input.customer);
+
+  const productIds = new Map<string, string>();
+  for (const line of input.lines) {
+    if (productIds.has(line.sku)) continue;
+    productIds.set(
+      line.sku,
+      await ensureProduct({
+        swipeRef: line.sku,
+        name: line.name,
+        kind: line.kind,
+        itemType: line.itemType,
+        priceInr: line.listPriceInr === undefined ? line.unitPriceInr : line.listPriceInr,
+        taxRatePercent: line.taxRatePercent,
+      })
+    );
+  }
+
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `UPDATE invoices SET
+         customer_id = $2,
+         gross_inr = $3,
+         discount_inr = 0,
+         net_inr = $3,
+         status = CASE
+           WHEN status = 'cancelled' THEN 'cancelled'
+           WHEN $3::numeric <= 0 OR amount_paid_inr >= $3::numeric THEN 'paid'
+           WHEN amount_paid_inr > 0 THEN 'part_paid'
+           ELSE 'unpaid'
+         END,
+         last_updated_at = now()
+       WHERE swipe_ref = $1
+       RETURNING id`,
+      [input.swipeRef, customer.id, input.totalInr]
+    );
+    const invoiceId = rows[0]?.id as string | undefined;
+    if (!invoiceId) {
+      await client.query("ROLLBACK");
+      return false;
+    }
+
+    await client.query(`DELETE FROM invoice_items WHERE invoice_id = $1`, [invoiceId]);
+    for (const line of input.lines) {
+      await client.query(
+        `INSERT INTO invoice_items (
+           id, invoice_id, product_id, name, quantity, unit_price_inr,
+           tax_rate_percent, total_inr
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [
+          randomUUID(), invoiceId, productIds.get(line.sku) ?? null, line.name,
+          line.quantity, line.unitPriceInr, line.taxRatePercent, line.totalInr,
+        ]
+      );
+    }
+    await client.query("COMMIT");
+    return true;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 /** The no-show path: the Swipe document is deleted, the mirror row is kept
  *  and marked — history survives cancellation. */
 export async function markInvoiceCancelled(number: string): Promise<string | null> {

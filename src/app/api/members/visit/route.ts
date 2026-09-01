@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { isOpsAuthed } from "@/lib/ops/auth";
-import { todayIST } from "@/lib/ops/state";
+import { bumpBoard, todayIST } from "@/lib/ops/state";
 import { billing } from "@/lib/billing";
 import {
   hardDeleteVisit,
@@ -158,6 +158,7 @@ export async function POST(req: Request) {
     });
     visit.punchInvoiceNumber = invoiceNumber;
 
+    await bumpBoard();
     await mirrorVisit(visit, membership); // best-effort, never throws
 
     return NextResponse.json({ visit, membership });

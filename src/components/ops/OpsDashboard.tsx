@@ -9,6 +9,7 @@ import PunchVisitSheet from "./PunchVisitSheet";
 import InvoiceItemsSheet from "./InvoiceItemsSheet";
 import CollectPaymentSheet from "./CollectPaymentSheet";
 import ApplyDiscountSheet from "./ApplyDiscountSheet";
+import EditBookingSheet from "./EditBookingSheet";
 import NewBookingSheet from "./NewBookingSheet";
 import SalesLine from "./SalesLine";
 
@@ -68,6 +69,15 @@ const RUSH_FROM_HOUR = 17;
 const RUSH_TO_HOUR = 21;
 const RUSH_POLL_MS = 5_000;
 
+/**
+ * How often the board asks "did anything change?" — one Redis GET via
+ * /api/ops/version, no Swipe calls. App-side writes (a customer's payment
+ * landing, the other tablet checking someone in) bump that version, and the
+ * board refetches the real list within seconds instead of waiting out the
+ * full poll.
+ */
+const NUDGE_MS = 10_000;
+
 /** Ms until this session's time is up; null when no clock is running — untimed
  *  membership visits, and bookings still waiting to check in. */
 function remainingMs(s: OpsSession, now: number): number | null {
@@ -100,6 +110,8 @@ export default function OpsDashboard() {
   const [collectFor, setCollectFor] = useState<OpsSession | null>(null);
   /** Session we're discounting before taking payment. */
   const [discountFor, setDiscountFor] = useState<OpsSession | null>(null);
+  /** Session whose booking is being edited — the creation form, reopened. */
+  const [editFor, setEditFor] = useState<OpsSession | null>(null);
   /** What became of each removed booking's invoice, keyed by session id. Lives
    *  only for this page view — it's a receipt for the tap just made, not state
    *  the board needs to reload. */
@@ -134,6 +146,37 @@ export default function OpsDashboard() {
       setLoading(false);
     }
   }, []);
+
+  // Change-signal check between polls: fetch the full list only when the
+  // version actually moved. First reading just primes the baseline.
+  const lastNudge = useRef<string | null>(null);
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = async () => {
+      if (stopped) return;
+      if (!document.hidden) {
+        try {
+          const res = await fetch("/api/ops/version");
+          const data = await res.json();
+          if (res.ok && typeof data.v === "string") {
+            if (lastNudge.current != null && data.v !== lastNudge.current) {
+              void fetchSessions();
+            }
+            lastNudge.current = data.v;
+          }
+        } catch {
+          // the regular poll is the fallback
+        }
+      }
+      timer = setTimeout(check, NUDGE_MS);
+    };
+    timer = setTimeout(check, NUDGE_MS);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [fetchSessions]);
 
   useEffect(() => {
     fetchSessions();
@@ -537,6 +580,7 @@ export default function OpsDashboard() {
                     onShowInvoice={setInvoiceFor}
                     onCollect={setCollectFor}
                     onDiscount={setDiscountFor}
+                    onEdit={setEditFor}
                   />
                 ))}
               </div>
@@ -628,6 +672,24 @@ export default function OpsDashboard() {
             // Straight into collecting: the discount was the negotiation, and
             // taking the money is what happens next in the same conversation.
             if (net > 0) setCollectFor({ ...session, amountDue: net });
+          }}
+        />
+      )}
+
+      {editFor && (
+        <EditBookingSheet
+          session={editFor}
+          onClose={() => setEditFor(null)}
+          onSaved={(session, amountDue) => {
+            setEditFor(null);
+            // The invoice was rewritten, so the balance (and possibly the kid
+            // count and timer) changed. Show the money at once; the refetch
+            // right behind it brings everything else.
+            setOverrides((prev) => ({
+              ...prev,
+              [session.id]: { ...prev[session.id], amountDue, paid: amountDue <= 0 },
+            }));
+            fetchSessions();
           }}
         />
       )}

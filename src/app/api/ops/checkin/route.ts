@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { billing } from "@/lib/billing";
 import { isOpsAuthed } from "@/lib/ops/auth";
-import { setCheckin, clearCheckin } from "@/lib/ops/state";
+import { bumpBoard, setCheckin, clearCheckin } from "@/lib/ops/state";
 import { stampInvoiceSession } from "@/lib/invoices/db";
 import { dbConfigured } from "@/lib/pg";
 
@@ -57,6 +57,7 @@ export async function POST(req: Request) {
         console.error("check-in stamp failed:", err)
       );
     }
+    await bumpBoard();
     return NextResponse.json({ ok: true, checkinAt });
   } catch (err) {
     console.error("check-in failed:", err);
@@ -80,6 +81,7 @@ export async function DELETE(req: Request) {
 
   try {
     await clearCheckin(id);
+    await bumpBoard();
     if (dbConfigured()) {
       await stampInvoiceSession("checkin", id, null).catch((err) =>
         console.error("check-in unstamp failed:", err)

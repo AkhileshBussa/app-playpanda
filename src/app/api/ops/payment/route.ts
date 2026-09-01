@@ -5,6 +5,7 @@ import { billing } from "@/lib/billing";
 import { PAYMENT_METHODS } from "@/lib/billing/types";
 import { recordPaymentMirror } from "@/lib/invoices/db";
 import { dbConfigured } from "@/lib/pg";
+import { bumpBoard } from "@/lib/ops/state";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +45,7 @@ export async function POST(req: Request) {
         amountDueAfter: result.amountDue,
       }).catch((mirrorErr) => console.error("payment mirror failed:", mirrorErr));
     }
+    await bumpBoard();
     return NextResponse.json(result);
   } catch (err) {
     // Overpayment / already-settled come back as plain messages worth showing;
