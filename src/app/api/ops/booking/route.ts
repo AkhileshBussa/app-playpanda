@@ -3,7 +3,14 @@ import { z } from "zod";
 import { isOpsAuthed } from "@/lib/ops/auth";
 import { billing } from "@/lib/billing";
 import { PAYMENT_METHODS, type EditRefusalReason } from "@/lib/billing/types";
-import { computeQuote, EXTRA_ADULT, PACKAGES, SOCKS, type PackageId } from "@/lib/pricing";
+import {
+  computeQuote,
+  EXTRA_30_MIN,
+  EXTRA_ADULT,
+  PACKAGES,
+  SOCKS,
+  type PackageId,
+} from "@/lib/pricing";
 import {
   editInvoiceMirror,
   quoteMirrorLines,
@@ -39,6 +46,9 @@ const bookingFields = {
   extraAdults: z.number().int().min(0).max(20),
   childSocks: z.number().int().min(0).max(30),
   adultSocks: z.number().int().min(0).max(30),
+  /** Half-hour extensions. Only the edit sheet sends it; a new booking picks a
+   *  longer package instead, so it defaults to none. */
+  extra30: z.number().int().min(0).max(20).default(0),
   kidNames: z.array(z.string().trim().max(40)).max(15).default([]),
 };
 
@@ -218,6 +228,7 @@ export async function GET(req: Request) {
         extraAdults: q[EXTRA_ADULT.sku] ?? 0,
         childSocks: q[SOCKS.child.sku] ?? 0,
         adultSocks: q[SOCKS.adult.sku] ?? 0,
+        extra30: q[EXTRA_30_MIN.sku] ?? 0,
       },
       total: state.total,
       amountDue: state.amountDue,

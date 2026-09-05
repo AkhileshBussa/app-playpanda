@@ -10,7 +10,7 @@
  * BillingProvider and swap the export in ./index.ts — nothing else changes.
  */
 
-import { EXTRA_ADULT, PACKAGES, SOCKS, round2 } from "../pricing";
+import { EXTRA_30_MIN, EXTRA_ADULT, PACKAGES, SOCKS, round2 } from "../pricing";
 import type {
   ApplyInvoiceDiscountInput,
   ApplyInvoiceDiscountResult,
@@ -850,6 +850,7 @@ const CATALOG_TAX = new Map<string, { taxRatePercent: number; itemType: "Product
       ]
   ),
   [EXTRA_ADULT.sku, { taxRatePercent: EXTRA_ADULT.taxRatePercent, itemType: "Service" }],
+  [EXTRA_30_MIN.sku, { taxRatePercent: EXTRA_30_MIN.taxRatePercent, itemType: "Service" }],
   [SOCKS.child.sku, { taxRatePercent: SOCKS.child.taxRatePercent, itemType: "Product" }],
   [SOCKS.adult.sku, { taxRatePercent: SOCKS.adult.taxRatePercent, itemType: "Product" }],
 ]);
@@ -864,6 +865,7 @@ const CATALOG_TAX = new Map<string, { taxRatePercent: number; itemType: "Product
 const CATALOG_PRICE = new Map<string, number>([
   ...PACKAGES.map((p) => [p.sku, p.pricePerKid] as [string, number]),
   [EXTRA_ADULT.sku, EXTRA_ADULT.price],
+  [EXTRA_30_MIN.sku, EXTRA_30_MIN.price],
   [SOCKS.child.sku, SOCKS.child.price],
   [SOCKS.adult.sku, SOCKS.adult.price],
 ]);
@@ -875,9 +877,10 @@ type EditableItemsCheck =
 /**
  * Can this invoice's lines be rebuilt from the booking form? Yes only when
  * every line is a catalogue product at its catalogue price — anything else
- * (membership punches, extra-time lines, hand-built items, discounted prices)
- * can't round-trip through the form's selection and is refused with a reason
- * the counter can act on.
+ * (membership punches, hand-built items, discounted prices) can't round-trip
+ * through the form's selection and is refused with a reason the counter can
+ * act on. Extra-time lines used to fall in that bucket; they're a catalogue
+ * product now, so a session that was extended stays editable.
  *
  * Two different play packages on one invoice split into separate board cards,
  * and a form that holds one package can't re-express them — same refusal as a

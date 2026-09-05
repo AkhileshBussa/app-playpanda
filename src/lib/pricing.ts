@@ -31,6 +31,26 @@ export const EXTRA_ADULT = {
   label: "Extra adult",
 } as const;
 
+/**
+ * Extra play time, sold in half-hour blocks (Swipe product 13).
+ *
+ * A counter-only add-on: the website sells a longer package, it doesn't sell
+ * extensions. This is for a family already inside who wants to stay on, so it
+ * only ever appears when a booking is edited.
+ *
+ * One block buys 30 minutes for ONE kid — the ops board divides the invoice's
+ * total extra minutes across the kids on it, so a two-kid session that wants
+ * another half hour each takes two blocks. That's how the counter already
+ * billed it by hand in Swipe, and the board's timer already reads it back.
+ */
+export const EXTRA_30_MIN = {
+  price: 199,
+  taxRatePercent: 18,
+  sku: "13",
+  name: "Extra 30 Minutes",
+  label: "Extra 30 min",
+} as const;
+
 export type PackageId = (typeof PACKAGES)[number]["id"];
 
 export interface BookingSelection {
@@ -39,6 +59,12 @@ export interface BookingSelection {
   extraAdults: number;
   childSocks: number;
   adultSocks: number;
+  /**
+   * Half-hour extensions. Optional because only the counter's edit sheet can
+   * set it — the customer-facing form has no notion of extending a session
+   * that hasn't started.
+   */
+  extra30?: number;
 }
 
 export interface QuoteLine {
@@ -107,6 +133,19 @@ export function computeQuote(sel: BookingSelection): Quote {
       taxRatePercent: EXTRA_ADULT.taxRatePercent,
       priceWithTax: EXTRA_ADULT.price,
       lineTotal: EXTRA_ADULT.price * sel.extraAdults,
+    });
+  }
+
+  if ((sel.extra30 ?? 0) > 0) {
+    lines.push({
+      sku: EXTRA_30_MIN.sku,
+      name: EXTRA_30_MIN.name,
+      displayName: EXTRA_30_MIN.label,
+      itemType: "Service",
+      quantity: sel.extra30 ?? 0,
+      taxRatePercent: EXTRA_30_MIN.taxRatePercent,
+      priceWithTax: EXTRA_30_MIN.price,
+      lineTotal: EXTRA_30_MIN.price * (sel.extra30 ?? 0),
     });
   }
 
