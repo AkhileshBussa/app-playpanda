@@ -99,6 +99,13 @@ Swipe endpoints (company 2430519), in
 | `POST expenses/get_categories` | the category picker |
 | `POST expenses/add_category` | "+ New category…" on the form |
 
+The form asks for the **date spent**, defaulted to today. Most expenses are
+raised the day the money goes out, but a bill that surfaces from someone's
+pocket two days later belongs on the day it was actually spent — and the
+[cash ledger](./ledger.md) reads that date, so a backdated cash expense comes
+off the right day's drawer. Future dates are refused: an expense is money
+already gone.
+
 Expenses are recorded as **already paid** against bank_id 1 (HDFC) — which is
 what a counter purchase actually is. An expense raised without a category comes
 back from Swipe blank with `category_id: -1`; the adapter labels those

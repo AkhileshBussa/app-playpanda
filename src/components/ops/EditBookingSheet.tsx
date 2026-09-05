@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   computeQuote,
+  EXTRA_30_MIN,
   EXTRA_ADULT,
   formatInr,
   PACKAGES,
@@ -47,6 +48,7 @@ export default function EditBookingSheet({ session, onClose, onSaved }: EditBook
   const [extraAdults, setExtraAdults] = useState(0);
   const [childSocks, setChildSocks] = useState(0);
   const [adultSocks, setAdultSocks] = useState(0);
+  const [extra30, setExtra30] = useState(0);
 
   const [loading, setLoading] = useState(true);
   /** Refusal copy when this booking can't be edited from the board. */
@@ -58,7 +60,7 @@ export default function EditBookingSheet({ session, onClose, onSaved }: EditBook
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const quote = computeQuote({ packageId, kids, extraAdults, childSocks, adultSocks });
+  const quote = computeQuote({ packageId, kids, extraAdults, childSocks, adultSocks, extra30 });
   const validPhone = /^[6-9]\d{9}$/.test(phone);
   const belowFloor = quote.total + 0.005 < collected;
   const valid = validPhone && name.trim().length >= 2 && !belowFloor;
@@ -87,6 +89,7 @@ export default function EditBookingSheet({ session, onClose, onSaved }: EditBook
         setExtraAdults(data.selection.extraAdults);
         setChildSocks(data.selection.childSocks);
         setAdultSocks(data.selection.adultSocks);
+        setExtra30(data.selection.extra30 ?? 0);
         setCollected(Math.max(0, Number(data.total ?? 0) - Number(data.amountDue ?? 0)));
       } catch (err) {
         if (!cancelled) {
@@ -144,6 +147,7 @@ export default function EditBookingSheet({ session, onClose, onSaved }: EditBook
           extraAdults,
           childSocks,
           adultSocks,
+          extra30,
           kidNames: kidNames.split(",").map((n) => n.trim()).filter(Boolean),
         }),
       });
@@ -292,6 +296,28 @@ export default function EditBookingSheet({ session, onClose, onSaved }: EditBook
                 max={30}
                 onChange={setAdultSocks}
               />
+            </div>
+
+            {/* Extra time is the reason most bookings get edited at all — a
+                family already inside asking to stay on — so it gets its own
+                row rather than a fifth cell in the add-ons grid.
+
+                One block is half an hour for ONE kid: the board splits the
+                invoice's extra minutes across the kids on it. The line under
+                the stepper does that arithmetic so nobody has to. */}
+            <div>
+              <CounterStepper
+                label={`${EXTRA_30_MIN.label} · ₹${EXTRA_30_MIN.price} each`}
+                value={extra30}
+                min={0}
+                max={20}
+                onChange={setExtra30}
+              />
+              <p className="mt-1 px-1 text-xs font-bold text-ink/40">
+                {extra30 === 0
+                  ? `One block is 30 min for one kid — ${kids} block${kids > 1 ? "s" : ""} adds half an hour to this booking.`
+                  : `Adds ${Math.round((extra30 / kids) * 30)} min to each kid's session.`}
+              </p>
             </div>
 
             <div>

@@ -10,7 +10,7 @@
  * BillingProvider and swap the export in ./index.ts — nothing else changes.
  */
 
-import { EXTRA_ADULT, PACKAGES, SOCKS, round2 } from "../pricing";
+import { EXTRA_30_MIN, EXTRA_ADULT, PACKAGES, SOCKS, round2 } from "../pricing";
 import type {
   ApplyInvoiceDiscountInput,
   ApplyInvoiceDiscountResult,
@@ -23,6 +23,7 @@ import type {
   CreateBookingInput,
   CollectPaymentInput,
   CustomerProfile,
+  DayCollection,
   DaySales,
   EditBookingInput,
   EditBookingResult,
@@ -159,6 +160,44 @@ function swipeDateToday(): string {
   }).formatToParts(new Date());
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
   return `${get("day")}-${get("month")}-${get("year")}`;
+}
+
+/**
+ * How far before the range's start to look for invoices, so a bill settled
+ * days after it was raised still lands in the day its money was taken. A
+ * fortnight covers anything the counter realistically leaves open; beyond that
+ * the invoice is a debt, not a drawer entry.
+ */
+const LATE_PAYMENT_LOOKBACK_DAYS = 14;
+
+/** "YYYY-MM-DD" → "DD-MM-YYYY" (what Swipe's filters take). */
+function toSwipeDate(iso: string): string {
+  const [y, m, d] = iso.split("-");
+  return `${d}-${m}-${y}`;
+}
+
+/** "DD-MM-YYYY" → "YYYY-MM-DD"; null for anything that isn't one. */
+function fromSwipeDate(value: string): string | null {
+  const m = value.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
+}
+
+const MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/** Swipe's human date, "05 Sep 2026" → "2026-09-05"; null if unparseable. */
+function displayDateToIso(value: unknown): string | null {
+  const m = String(value ?? "").match(/^(\d{1,2}) ([A-Za-z]{3})[a-z]* (\d{4})$/);
+  if (!m) return null;
+  const month = MONTH_NAMES.indexOf(m[2].toLowerCase());
+  if (month < 0) return null;
+  return `${m[3]}-${String(month + 1).padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+}
+
+/** Calendar-day arithmetic on "YYYY-MM-DD", done in UTC so it can't drift. */
+function shiftDays(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 }
 
 function taxBreakup(priceWithTax: number, taxRatePercent: number, quantity: number) {
@@ -757,8 +796,20 @@ async function createSwipePayment(p: {
 
 /** Raw get_transactions rows for today (paged) — totals + payments included. */
 async function listTodayTransactions(): Promise<Array<Record<string, unknown>>> {
-  const PAGE_SIZE = 100;
   const today = swipeDateToday();
+  return listTransactions(today, today);
+}
+
+/**
+ * Every invoice whose INVOICE date falls in [from, to] (Swipe dates,
+ * DD-MM-YYYY). Callers that care about money rather than billing must bucket
+ * by each payment's own date, not by the invoice's — see getCollectionsByDay.
+ */
+async function listTransactions(
+  from: string,
+  to: string
+): Promise<Array<Record<string, unknown>>> {
+  const PAGE_SIZE = 100;
   const rows: Array<Record<string, unknown>> = [];
   for (let page = 0; page < 20; page++) {
     const res = await swipeCall<SwipeResponse & { transactions?: Array<Record<string, unknown>> }>(
@@ -771,7 +822,7 @@ async function listTodayTransactions(): Promise<Array<Record<string, unknown>>> 
         search: "",
         search_type: "Customer",
         filters: { invoice_type: [], payment_mode: "", filtered_users: [], status: "", is_export: false, type_of_doc: [], prefixes: [] },
-        date: `${today} - ${today}`,
+        date: `${from} - ${to}`,
         document_type: "invoice",
         sort_type: "",
         sort_order: "",
@@ -799,6 +850,7 @@ const CATALOG_TAX = new Map<string, { taxRatePercent: number; itemType: "Product
       ]
   ),
   [EXTRA_ADULT.sku, { taxRatePercent: EXTRA_ADULT.taxRatePercent, itemType: "Service" }],
+  [EXTRA_30_MIN.sku, { taxRatePercent: EXTRA_30_MIN.taxRatePercent, itemType: "Service" }],
   [SOCKS.child.sku, { taxRatePercent: SOCKS.child.taxRatePercent, itemType: "Product" }],
   [SOCKS.adult.sku, { taxRatePercent: SOCKS.adult.taxRatePercent, itemType: "Product" }],
 ]);
@@ -813,6 +865,7 @@ const CATALOG_TAX = new Map<string, { taxRatePercent: number; itemType: "Product
 const CATALOG_PRICE = new Map<string, number>([
   ...PACKAGES.map((p) => [p.sku, p.pricePerKid] as [string, number]),
   [EXTRA_ADULT.sku, EXTRA_ADULT.price],
+  [EXTRA_30_MIN.sku, EXTRA_30_MIN.price],
   [SOCKS.child.sku, SOCKS.child.price],
   [SOCKS.adult.sku, SOCKS.adult.price],
 ]);
@@ -824,9 +877,10 @@ type EditableItemsCheck =
 /**
  * Can this invoice's lines be rebuilt from the booking form? Yes only when
  * every line is a catalogue product at its catalogue price — anything else
- * (membership punches, extra-time lines, hand-built items, discounted prices)
- * can't round-trip through the form's selection and is refused with a reason
- * the counter can act on.
+ * (membership punches, hand-built items, discounted prices) can't round-trip
+ * through the form's selection and is refused with a reason the counter can
+ * act on. Extra-time lines used to fall in that bucket; they're a catalogue
+ * product now, so a session that was extended stays editable.
  *
  * Two different play packages on one invoice split into separate board cards,
  * and a form that holds one package can't re-express them — same refusal as a
@@ -1619,6 +1673,43 @@ export const swipeBilling: BillingProvider = {
       }
     }
     return sales;
+  },
+
+  // Money taken per day, for the cash ledger's tally against what the counter
+  // declared. Two things make this more than a loop over getTodaySales():
+  //
+  //  - it counts by PAYMENT date, not invoice date, so a bill raised on Friday
+  //    and settled on Saturday lands in Saturday's drawer, which is where the
+  //    note physically is;
+  //  - because of that it has to fetch a little further back than the range
+  //    asked for, since get_transactions filters on the invoice date and those
+  //    late-settled invoices would otherwise never be seen at all.
+  async getCollectionsByDay(from: string, to: string): Promise<DayCollection[]> {
+    const rows = await listTransactions(toSwipeDate(shiftDays(from, -LATE_PAYMENT_LOOKBACK_DAYS)), toSwipeDate(to));
+
+    const byDay = new Map<string, DayCollection>();
+    for (const row of rows) {
+      const payments = Array.isArray(row.payments)
+        ? (row.payments as Array<Record<string, unknown>>)
+        : [];
+      for (const p of payments) {
+        // Swipe stamps payments DD-MM-YYYY; the invoice's own date is "05 Sep
+        // 2026". Fall back to the invoice date only if the payment has none.
+        const date = fromSwipeDate(String(p.payment_date ?? "")) ?? displayDateToIso(row.invoice_date);
+        if (!date || date < from || date > to) continue;
+
+        const day = byDay.get(date) ?? { date, cash: 0, card: 0, upi: 0, other: 0 };
+        const amount = Number(p.amount ?? 0);
+        const mode = String(p.payment_mode ?? "").toLowerCase();
+        if (mode === "cash") day.cash += amount;
+        else if (mode === "card") day.card += amount;
+        else if (mode === "upi") day.upi += amount;
+        else day.other += amount;
+        byDay.set(date, day);
+      }
+    }
+
+    return [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date));
   },
 
   async health(): Promise<Record<string, unknown>> {

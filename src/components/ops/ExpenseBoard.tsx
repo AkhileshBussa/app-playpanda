@@ -25,10 +25,16 @@ const EARLIEST_MONTH = "2026-03";
  * either side of a month boundary and cause a hydration mismatch.
  */
 function currentMonth(): string {
+  return istToday().slice(0, 7);
+}
+
+/** Today in IST, "YYYY-MM-DD" — what the date input speaks. */
+function istToday(): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Kolkata",
     year: "numeric",
     month: "2-digit",
+    day: "2-digit",
   }).format(new Date());
 }
 
@@ -252,6 +258,11 @@ function AddExpenseSheet({
   const [newCategory, setNewCategory] = useState("");
   const [description, setDescription] = useState("");
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("UPI");
+  // Today, because that's when almost every expense is raised — but a bill
+  // that surfaces from someone's pocket two days later belongs on the day the
+  // money actually left, not the day it was typed in. The cash ledger reads
+  // this date, so a backdated cash expense lands in the right day's drawer.
+  const [spentOn, setSpentOn] = useState(istToday());
   // Deliberately starts unpicked — defaulting to the first name would quietly
   // pin every expense on whoever sorts first.
   const [addedBy, setAddedBy] = useState("");
@@ -296,6 +307,7 @@ function AddExpenseSheet({
           ...(categoryId === "new" ? { newCategory } : {}),
           description,
           paymentMode,
+          spentOn,
           ...(addedBy ? { addedBy } : {}),
           attachments: photoUrl ? [photoUrl] : [],
         }),
@@ -315,6 +327,7 @@ function AddExpenseSheet({
 
   const valid =
     Number(amount) > 0 &&
+    spentOn !== "" &&
     description.trim().length > 0 &&
     (categoryId !== "new" || newCategory.trim().length > 0) &&
     // A name must be picked whenever there's a roster to pick from.
@@ -342,6 +355,17 @@ function AddExpenseSheet({
             autoFocus
             placeholder="0"
             className="w-full rounded-2xl border-2 border-ink/10 bg-white px-4 py-3 text-2xl font-black text-ink outline-none placeholder:text-ink/20 focus:border-coral"
+          />
+        </label>
+
+        <label className="mt-3 block">
+          <span className="mb-1.5 block px-1 text-sm font-black text-ink/60">Date spent</span>
+          <input
+            type="date"
+            value={spentOn}
+            max={istToday()}
+            onChange={(e) => setSpentOn(e.target.value)}
+            className="w-full rounded-2xl border-2 border-ink/10 bg-white px-4 py-3 text-base font-bold text-ink outline-none focus:border-coral"
           />
         </label>
 

@@ -74,6 +74,12 @@ export function swipeDate(d: Date): string {
   return `${get("day")}-${get("month")}-${get("year")}`;
 }
 
+/** "YYYY-MM-DD" (how the app writes a day) → "DD-MM-YYYY" (how Swipe does). */
+export function swipeDateFromDay(day: string): string {
+  const [y, m, d] = day.split("-");
+  return `${d}-${m}-${y}`;
+}
+
 /** First and last day of the IST month containing `d`, as Swipe dates. */
 export function monthRange(d = new Date()): { from: string; to: string; label: string } {
   const ist = new Intl.DateTimeFormat("en-CA", {
