@@ -27,6 +27,8 @@ third party's API.
 | `memberships`, `membership_visits` | Source of truth for passes and punches (Swipe's ₹0 punch invoices are receipts). |
 | `discount_codes`, `discount_redemptions` | Ledger of record for discounts — limits are enforced here, nowhere else. |
 | `employees`, `attendance`, `leave_requests`, `maintenance_issues`, `feedback` | The staff tools. |
+| `cash_months`, `cash_days`, `cash_movements` | The cash ledger — the month's opening balance, what the counter counted each day, and cash moving for reasons that aren't sales. Only the *declared* side lives here; the Swipe tally and cash spent on expenses are read live (see [ledger.md](./ledger.md)). |
+| `cash_audit` | Append-only history of every human change to the three tables above. Written in the same transaction as the change it describes, so no path can alter a figure without leaving a trace. Nothing updates or deletes rows here. |
 
 ## Conventions
 

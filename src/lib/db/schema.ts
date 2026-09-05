@@ -348,6 +348,100 @@ export const ensureSchema = onceSchema(`
     ON discount_redemptions (created_at);
   CREATE INDEX IF NOT EXISTS discount_redemptions_rzp_order_idx
     ON discount_redemptions (rzp_order_id);
+
+  -- ── Cash ledger ────────────────────────────────────────────────────────────
+  -- What the counter counted, so the owner can tell how much cash is actually
+  -- in the store. Nothing here comes from Swipe: these are the DECLARED
+  -- figures, kept deliberately independent of the books so the two can be put
+  -- side by side and disagree. (The Swipe side of the tally, and cash spent
+  -- from the drawer, are read live from Swipe — never copied in here.)
+  --
+  -- Amounts are stamped with the environment for the same reason invoices are:
+  -- one Neon database serves prod, preview and local, and a test entry must
+  -- never move the real drawer.
+  CREATE TABLE IF NOT EXISTS cash_months (
+    month TEXT NOT NULL,
+    environment TEXT NOT NULL DEFAULT 'local',
+    opening_inr NUMERIC NOT NULL DEFAULT 0,
+    -- The first day the ledger covers. Set only for the month the ledger was
+    -- switched on mid-way (September 2026 starts on the 6th); NULL means the
+    -- whole month counts.
+    starts_on DATE,
+    -- TRUE when a human set this opening; FALSE when it was carried forward
+    -- from the previous month's close. Carried openings re-derive, set ones
+    -- never move under the owner's feet.
+    is_explicit BOOLEAN NOT NULL DEFAULT FALSE,
+    set_by TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata JSONB NOT NULL DEFAULT '{}',
+    PRIMARY KEY (month, environment)
+  );
+
+  CREATE TABLE IF NOT EXISTS cash_days (
+    id TEXT PRIMARY KEY,
+    day DATE NOT NULL,
+    environment TEXT NOT NULL DEFAULT 'local',
+    declared_cash_inr NUMERIC NOT NULL DEFAULT 0,
+    declared_online_inr NUMERIC NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    entered_by TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata JSONB NOT NULL DEFAULT '{}'
+  );
+  -- One declaration per day: entering it again corrects it rather than adding
+  -- a second day's takings.
+  CREATE UNIQUE INDEX IF NOT EXISTS cash_days_day_idx ON cash_days (day, environment);
+
+  -- Cash that moved for a reason that isn't a sale or an expense — the owner
+  -- taking money out, or float going in. Always a positive amount; the
+  -- direction column says which way.
+  CREATE TABLE IF NOT EXISTS cash_movements (
+    id TEXT PRIMARY KEY,
+    day DATE NOT NULL,
+    environment TEXT NOT NULL DEFAULT 'local',
+    direction TEXT NOT NULL,
+    amount_inr NUMERIC NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    party TEXT NOT NULL DEFAULT '',
+    recorded_by TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata JSONB NOT NULL DEFAULT '{}'
+  );
+  CREATE INDEX IF NOT EXISTS cash_movements_day_idx ON cash_movements (day, environment);
+
+  -- Every human change to the ledger, append-only. Nothing ever updates or
+  -- deletes a row here: a figure that can be corrected quietly is not a
+  -- ledger, and the correction is often the interesting part.
+  --
+  -- Two names on each row, deliberately. changed_by is typed on the form and
+  -- is therefore a claim; changed_tier comes from the cookie that was actually
+  -- presented and cannot be typed at all. When they disagree, believe the tier.
+  --
+  -- Carried-forward opening balances are NOT recorded: they're derived from
+  -- the previous month's close and re-derived on every read, so logging them
+  -- would bury the handful of real edits under machine noise.
+  CREATE TABLE IF NOT EXISTS cash_audit (
+    id TEXT PRIMARY KEY,
+    environment TEXT NOT NULL DEFAULT 'local',
+    -- The ledger day the change is ABOUT, not the day it was made — that's
+    -- created_at. This is what hangs the history off the right day's card.
+    day DATE NOT NULL,
+    entity TEXT NOT NULL,
+    action TEXT NOT NULL,
+    before JSONB,
+    after JSONB,
+    changed_by TEXT NOT NULL DEFAULT '',
+    changed_tier TEXT NOT NULL DEFAULT 'counter',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Present for the schema convention's sake; on an append-only table it
+    -- never moves off created_at.
+    last_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata JSONB NOT NULL DEFAULT '{}'
+  );
+  CREATE INDEX IF NOT EXISTS cash_audit_day_idx ON cash_audit (day, environment);
 `);
 
 // ── Row helpers ──────────────────────────────────────────────────────────────

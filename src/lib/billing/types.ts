@@ -376,6 +376,24 @@ export interface DaySales {
   invoiceCount: number;
 }
 
+/**
+ * What was COLLECTED on one calendar day (IST), bucketed by mode.
+ *
+ * Deliberately not `DaySales`: that reports a day's *billing* (invoice totals,
+ * paid or not), which is the right number for "how did we trade today" and the
+ * wrong one for "what should be in the drawer". Money is counted here on the
+ * day it was taken, however old the invoice it settled.
+ */
+export interface DayCollection {
+  /** IST calendar day, "YYYY-MM-DD". */
+  date: string;
+  cash: number;
+  card: number;
+  upi: number;
+  /** Anything the provider doesn't name — cheques, wallets, adjustments. */
+  other: number;
+}
+
 export interface BillingProvider {
   /** Identifier for diagnostics, e.g. "swipe". */
   readonly name: string;
@@ -473,6 +491,12 @@ export interface BillingProvider {
 
   /** Today's sales rollup (billed total + collected by mode), for the ops header. */
   getTodaySales(): Promise<DaySales>;
+
+  /**
+   * Collections per day across an inclusive IST date range ("YYYY-MM-DD"),
+   * for the cash ledger's tally. Days with no money taken are omitted.
+   */
+  getCollectionsByDay(from: string, to: string): Promise<DayCollection[]>;
 
   /** Read-only connectivity/auth diagnostics. */
   health(): Promise<Record<string, unknown>>;
