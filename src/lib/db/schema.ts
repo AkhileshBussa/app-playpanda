@@ -442,6 +442,37 @@ export const ensureSchema = onceSchema(`
     metadata JSONB NOT NULL DEFAULT '{}'
   );
   CREATE INDEX IF NOT EXISTS cash_audit_day_idx ON cash_audit (day, environment);
+
+  -- ── Product changes ────────────────────────────────────────────────────────
+  -- Who changed a product's price, cost or reorder level, and to what.
+  -- Append-only, like cash_audit: nothing here is ever updated or deleted.
+  --
+  -- The products themselves live in Swipe, which keeps no history of its own
+  -- and offers no way to ask who touched what. That's tolerable while only the
+  -- owner can edit them; it isn't once the counter can, so this is the record.
+  --
+  -- swipe_ref holds the Swipe product id, per the convention that Swipe
+  -- handles live only in swipe_ref columns. It is deliberately NOT a foreign
+  -- key to our products table: that table only holds rows for products the app
+  -- has itself billed, and the shelf is full of things it hasn't (water
+  -- bottles, snacks) whose history still matters.
+  CREATE TABLE IF NOT EXISTS product_audit (
+    id TEXT PRIMARY KEY,
+    environment TEXT NOT NULL DEFAULT 'local',
+    swipe_ref TEXT NOT NULL,
+    -- Kept alongside so the log stays readable after a rename.
+    product_name TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    before JSONB,
+    after JSONB,
+    changed_by TEXT NOT NULL DEFAULT '',
+    changed_tier TEXT NOT NULL DEFAULT 'counter',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata JSONB NOT NULL DEFAULT '{}'
+  );
+  CREATE INDEX IF NOT EXISTS product_audit_ref_idx
+    ON product_audit (swipe_ref, environment);
 `);
 
 // ── Row helpers ──────────────────────────────────────────────────────────────

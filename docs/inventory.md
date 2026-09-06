@@ -11,13 +11,42 @@ disagrees with itself by Friday. Same rule expenses and purchases follow.
 | | Counter | Owner |
 | --- | --- | --- |
 | What's on hand, what's running low | ✅ | ✅ |
-| Cost, margin, stock value | — | ✅ |
-| Add or edit a product | — | ✅ |
+| Stock in and out, per product | ✅ | ✅ |
+| Add or edit a product | ✅ | ✅ |
+| Cost, margin, and prices on movements | — | ✅ |
 | Record stock received | — | ✅ |
 
 Cost and margin are stripped from the counter's *response*, not hidden in its
-UI. Receiving is owner-only too, for now: it raises a real financial document.
-Easy to relax if deliveries turn out to arrive when only the counter is there.
+UI.
+
+**The counter can change the catalogue.** A delivery arrives with a new line on
+it, or a supplier's price moves, and the person standing there is the one who
+knows; making them wait for the owner means the catalogue goes stale, which is
+worse than the risk of a mistyped cost. The safeguard isn't a locked door — it's
+that every change is recorded with who made it.
+
+Receiving stays owner-only, because it raises a real financial document. Easy
+to relax if deliveries turn out to arrive when only the counter is there.
+
+## One product's story
+
+Tapping a product shows two things, kept apart because they answer different
+questions and come from different places.
+
+**Stock in and out** is Swipe's own inventory timeline (`inventory/timeline`),
+so every line carries a real `INV-` or `PINV-` serial and a running balance —
+the count and the paperwork can be checked against each other. Nothing here is
+inferred by this app.
+
+**Changes to this product** is ours, in `product_audit`, because Swipe keeps no
+history and cannot say who moved a price. Append-only, same doctrine as the
+cash ledger: nothing updates or deletes a row. Each entry carries the typed
+name beside the tier proved by the cookie, and re-saving the form untouched
+records nothing — an accidental re-save would bury the edits that matter.
+
+The audit row is written after Swipe accepts the change, never before, and
+best-effort: a Postgres hiccup must not fail an edit Swipe has already made, or
+the two would disagree about what the product is.
 
 ## The kitchen is not inventory
 
@@ -63,6 +92,7 @@ were taken from real requests and verified live.
 | `POST utils/get_prefix_seral_number` | next `PINV-` serial (`document_type: "purchase"`) |
 | `POST v3/doc/create` | the purchase invoice — same endpoint bookings use |
 | `POST v3/payments/create_payment` | the payment, `payment_type: "out"` |
+| `POST inventory/timeline` | one product's stock movements, mapped to documents |
 
 Three things learnt the hard way, all worth not re-discovering:
 

@@ -67,11 +67,13 @@ export async function GET() {
 }
 
 /**
- * The catalogue itself — owner only.
+ * The catalogue — the counter may change it too.
  *
- * What a product costs and what it sells for are pricing decisions, not floor
- * work, and a mistyped cost quietly poisons every margin figure on the page.
- * The counter reads stock; it doesn't set it.
+ * A delivery arrives with a new line on it, or a supplier's price moves, and
+ * the person standing there is the one who knows. Making them wait for the
+ * owner means the catalogue goes stale, which is worse than the risk of a
+ * mistyped cost. The safeguard isn't a locked door, it's that every change is
+ * recorded with who made it — see lib/inventory/history.ts.
  */
 const productSchema = z.object({
   name: z.string().trim().min(1, "Name the product").max(100),
@@ -84,6 +86,8 @@ const productSchema = z.object({
   costPrice: z.number().min(0).max(1_000_000).default(0),
   lowStockAt: z.number().int().min(0).max(100_000).default(0),
   hsnCode: z.string().trim().max(20).default(""),
+  /** Who's making the change. A shared password can't say, so the form asks. */
+  changedBy: z.string().trim().max(60).default(""),
 });
 
 async function readProduct(req: Request) {
@@ -97,14 +101,17 @@ async function readProduct(req: Request) {
 
 /** Add a product to the Swipe catalogue. */
 export async function POST(req: Request) {
-  if (!(await isAdminAuthed())) {
+  if (!(await isOpsAuthed())) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const parsed = await readProduct(req);
   if (!parsed.ok) return NextResponse.json({ error: parsed.message }, { status: 400 });
 
   try {
-    await createProduct(parsed.input);
+    await createProduct(parsed.input, {
+      name: parsed.input.changedBy,
+      tier: (await isAdminAuthed()) ? "owner" : "counter",
+    });
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error("product create failed:", err);
@@ -116,7 +123,7 @@ export async function POST(req: Request) {
 
 /** Edit one. Everything the form doesn't set is preserved. */
 export async function PATCH(req: Request) {
-  if (!(await isAdminAuthed())) {
+  if (!(await isOpsAuthed())) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -128,7 +135,10 @@ export async function PATCH(req: Request) {
   if (!parsed.ok) return NextResponse.json({ error: parsed.message }, { status: 400 });
 
   try {
-    await updateProduct(id, parsed.input);
+    await updateProduct(id, parsed.input, {
+      name: parsed.input.changedBy,
+      tier: (await isAdminAuthed()) ? "owner" : "counter",
+    });
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error("product update failed:", err);

@@ -38,6 +38,23 @@ export default function StockBoard({ isAdmin }: { isAdmin: boolean }) {
   /** The product being edited, or "new" for a fresh one. Owner only. */
   const [editing, setEditing] = useState<StockProduct | "new" | null>(null);
   const [receiving, setReceiving] = useState(false);
+  /** The product whose movements are open. */
+  const [viewing, setViewing] = useState<StockProduct | null>(null);
+  // Same stand-in for per-person login the other boards use: a shared password
+  // can't say who you are, so the form asks.
+  const [staff, setStaff] = useState<string[]>([]);
+
+  useEffect(() => {
+    fetch("/api/ops/employees")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        const names = (body?.employees ?? [])
+          .filter((e: { active: boolean }) => e.active)
+          .map((e: { name: string }) => e.name);
+        setStaff(names);
+      })
+      .catch(() => {});
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -79,21 +96,19 @@ export default function StockBoard({ isAdmin }: { isAdmin: boolean }) {
           placeholder="Search stock…"
           className="min-w-0 flex-1 rounded-full bg-white px-5 py-2.5 text-sm font-bold text-ink shadow-btn outline-none placeholder:font-bold placeholder:text-ink/30 focus:ring-2 focus:ring-coral"
         />
+        <button
+          onClick={() => setEditing("new")}
+          className="shrink-0 rounded-full bg-white px-4 py-2.5 text-sm font-black text-ink/70 shadow-btn transition-all hover:bg-ink/5 active:translate-y-0.5 active:shadow-btn-pressed"
+        >
+          + Add
+        </button>
         {isAdmin && (
-          <>
-            <button
-              onClick={() => setEditing("new")}
-              className="shrink-0 rounded-full bg-white px-4 py-2.5 text-sm font-black text-ink/70 shadow-btn transition-all hover:bg-ink/5 active:translate-y-0.5 active:shadow-btn-pressed"
-            >
-              + Add
-            </button>
-            <button
-              onClick={() => setReceiving(true)}
-              className="shrink-0 rounded-full bg-coral px-4 py-2.5 text-sm font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
-            >
-              📥 Receive
-            </button>
-          </>
+          <button
+            onClick={() => setReceiving(true)}
+            className="shrink-0 rounded-full bg-coral px-4 py-2.5 text-sm font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
+          >
+            📥 Receive
+          </button>
         )}
       </div>
 
@@ -108,22 +123,6 @@ export default function StockBoard({ isAdmin }: { isAdmin: boolean }) {
         </div>
       ) : !totals ? null : (
         <>
-          <div className="mt-3 rounded-chunk bg-white p-5 shadow-chunk">
-            <p className="text-sm font-black uppercase tracking-wide text-ink/40">
-              {isAdmin ? "Stock on hand" : "What's on the shelves"}
-            </p>
-            {isAdmin ? (
-              <p className="mt-1 text-4xl font-black text-ink">{rupees(totals.valueInr)}</p>
-            ) : (
-              <p className="mt-1 text-4xl font-black text-ink">{totals.units}</p>
-            )}
-            <p className="mt-0.5 text-sm font-bold text-ink/50">
-              {totals.lines} product{totals.lines === 1 ? "" : "s"} · {totals.units} unit
-              {totals.units === 1 ? "" : "s"} on hand
-              {isAdmin && " · valued at what we paid"}
-            </p>
-          </div>
-
           {/* Said plainly rather than left for the reader to infer from a page
               of odd-looking rows. Each of these is a data problem upstream,
               not something this page can put right. */}
@@ -162,13 +161,16 @@ export default function StockBoard({ isAdmin }: { isAdmin: boolean }) {
                   key={p.id}
                   product={p}
                   isAdmin={isAdmin}
-                  onEdit={isAdmin ? () => setEditing(p) : undefined}
+                  onEdit={() => setEditing(p)}
+                  onOpen={() => setViewing(p)}
                 />
               ))}
             </ul>
           )}
         </>
       )}
+
+      {viewing && <ProductDetailSheet product={viewing} onClose={() => setViewing(null)} />}
 
       {receiving && products && (
         <ReceiveStockSheet
@@ -184,6 +186,7 @@ export default function StockBoard({ isAdmin }: { isAdmin: boolean }) {
       {editing && (
         <ProductSheet
           product={editing === "new" ? null : editing}
+          staff={staff}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
@@ -203,14 +206,18 @@ function StockRow({
   product: p,
   isAdmin,
   onEdit,
+  onOpen,
 }: {
   product: StockProduct;
   isAdmin: boolean;
-  /** Undefined for the counter — the catalogue is an owner decision. */
-  onEdit?: () => void;
+  onEdit: () => void;
+  onOpen: () => void;
 }) {
   return (
     <li className="rounded-2xl bg-white p-3.5 shadow-chunk">
+      {/* The card itself opens the movements — the question a stock line
+          usually prompts is "where did they all go", not "let me edit this". */}
+      <button onClick={onOpen} className="block w-full text-left">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-base font-black text-ink">{p.name}</p>
@@ -246,14 +253,22 @@ function StockRow({
         </div>
       </div>
 
-      {onEdit && (
+      </button>
+
+      <div className="mt-1.5 flex items-center gap-3">
+        <button
+          onClick={onOpen}
+          className="text-xs font-black text-ink/40 underline-offset-2 hover:text-ink/70 hover:underline"
+        >
+          Stock in &amp; out
+        </button>
         <button
           onClick={onEdit}
-          className="mt-1.5 text-xs font-black text-coral underline-offset-2 hover:underline"
+          className="text-xs font-black text-coral underline-offset-2 hover:underline"
         >
           Edit
         </button>
-      )}
+      </div>
     </li>
   );
 }
@@ -279,10 +294,12 @@ const TAX_SLABS = [0, 5, 12, 18, 28] as const;
  */
 function ProductSheet({
   product,
+  staff,
   onClose,
   onSaved,
 }: {
   product: StockProduct | null;
+  staff: string[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -293,6 +310,9 @@ function ProductSheet({
   const [category, setCategory] = useState(product?.category ?? "");
   const [cost, setCost] = useState(product && product.costPrice > 0 ? String(product.costPrice) : "");
   const [lowStock, setLowStock] = useState(product?.lowStockAt ? String(product.lowStockAt) : "");
+  // Deliberately starts unpicked — defaulting would pin every price change on
+  // whoever happens to sort first.
+  const [changedBy, setChangedBy] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -317,6 +337,7 @@ function ProductSheet({
             category: category.trim(),
             costPrice: Number(cost || 0),
             lowStockAt: Number(lowStock || 0),
+            changedBy,
           }),
         }
       );
@@ -438,6 +459,28 @@ function ProductSheet({
           />
         </label>
 
+        {/* Anyone at the counter may change a product now, so the record of who
+            did is the safeguard that used to be a locked door. */}
+        {staff.length > 0 && (
+          <label className="mt-3 block">
+            <span className="mb-1.5 block px-1 text-sm font-black text-ink/60">Changed by</span>
+            <select
+              value={changedBy}
+              onChange={(e) => setChangedBy(e.target.value)}
+              className={inputClass}
+            >
+              <option value="" disabled>
+                Who&apos;s making this change?
+              </option>
+              {staff.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
         {error && <p className="mt-2 px-1 text-sm font-bold text-coral">{error}</p>}
 
         <div className="mt-4 flex gap-2">
@@ -450,7 +493,7 @@ function ProductSheet({
           </button>
           <button
             type="submit"
-            disabled={busy || !name.trim() || price === ""}
+            disabled={busy || !name.trim() || price === "" || (staff.length > 0 && !changedBy)}
             className="flex-1 rounded-full bg-ink py-3 text-base font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed disabled:opacity-40"
           >
             {busy ? "Saving…" : product ? "Save" : "Add"}
@@ -719,6 +762,175 @@ function ReceiveStockSheet({
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+interface Movement {
+  date: string;
+  direction: "in" | "out";
+  qty: number;
+  balance: number;
+  documentType: string;
+  serialNumber: string;
+  party: string;
+  priceInr: number;
+}
+
+interface Change {
+  id: string;
+  at: number;
+  action: "created" | "updated";
+  by: string;
+  tier: "counter" | "owner";
+  summary: string;
+}
+
+/**
+ * One product's story: every movement of its stock, and every change to the
+ * product itself.
+ *
+ * The two answer different questions and come from different places, so they
+ * are shown apart rather than interleaved. Movements are Swipe's own inventory
+ * timeline, which is why each line carries a real INV- or PINV- serial — the
+ * count and the paperwork can be checked against each other. The change
+ * history is ours, because Swipe keeps none and cannot say who moved a price.
+ */
+function ProductDetailSheet({
+  product,
+  onClose,
+}: {
+  product: StockProduct;
+  onClose: () => void;
+}) {
+  const [movements, setMovements] = useState<Movement[] | null>(null);
+  const [changes, setChanges] = useState<Change[]>([]);
+  const [movementsError, setMovementsError] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/ops/stock/${product.id}`);
+        const body = await res.json();
+        if (cancelled) return;
+        setMovements(body.movements);
+        setMovementsError(body.movementsError ?? (res.ok ? null : "Couldn't load"));
+        setChanges(body.changes ?? []);
+        setIsAdmin(Boolean(body.isAdmin));
+      } catch {
+        if (!cancelled) setMovementsError("Couldn't load");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [product.id]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto sm:items-center sm:p-4">
+      <div className="absolute inset-0 bg-ink/40" onClick={onClose} />
+      <div className="relative max-h-[92dvh] w-full max-w-md overflow-y-auto rounded-t-chunk bg-cream p-5 sm:rounded-chunk">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="truncate text-xl font-black text-ink">{product.name}</h2>
+            <p className="text-sm font-bold text-ink/50">
+              {product.qty} {product.unit || "units"} on hand
+              {product.category && ` · ${product.category}`}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="shrink-0 text-2xl leading-none text-ink/40 hover:text-ink"
+            aria-label="Close"
+          >
+            &times;
+          </button>
+        </div>
+
+        {loading ? (
+          <div className="py-12 text-center">
+            <div className="inline-block h-6 w-6 animate-spin rounded-full border-4 border-ink/15 border-t-coral" />
+          </div>
+        ) : (
+          <>
+            <p className="mt-4 text-[11px] font-black uppercase tracking-wide text-ink/40">
+              Stock in &amp; out
+            </p>
+            {movementsError ? (
+              <p className="mt-1.5 rounded-2xl bg-coral/15 px-4 py-3 text-sm font-bold text-ink">
+                {movementsError}
+              </p>
+            ) : movements && movements.length > 0 ? (
+              <ul className="mt-1.5 space-y-1">
+                {movements.map((m, i) => (
+                  <li
+                    key={`${m.serialNumber}-${i}`}
+                    className="flex items-baseline justify-between gap-3 border-b border-ink/5 py-1.5 text-sm"
+                  >
+                    <span className="min-w-0">
+                      <span
+                        className={`font-black ${m.direction === "in" ? "text-green" : "text-ink/70"}`}
+                      >
+                        {m.direction === "in" ? "+" : "−"}
+                        {m.qty}
+                      </span>
+                      <span className="ml-2 font-bold text-ink/50">{m.serialNumber}</span>
+                      {m.party && (
+                        <span className="ml-1.5 text-xs font-bold text-ink/30">{m.party}</span>
+                      )}
+                      <br />
+                      <span className="text-xs font-bold text-ink/30">
+                        {m.date} · {m.documentType === "purchase" ? "received" : "sold"}
+                        {isAdmin && m.priceInr > 0 && ` · ₹${Math.round(m.priceInr)} a unit`}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-xs font-bold text-ink/40">
+                      {m.balance} left
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-1.5 text-sm font-bold text-ink/40">
+                Nothing has moved in the last year.
+              </p>
+            )}
+
+            <p className="mt-5 text-[11px] font-black uppercase tracking-wide text-ink/40">
+              Changes to this product
+            </p>
+            {changes.length === 0 ? (
+              <p className="mt-1.5 text-sm font-bold text-ink/40">
+                Never changed from the app.
+              </p>
+            ) : (
+              <ol className="mt-1.5 space-y-1 border-l-2 border-ink/10 pl-3">
+                {changes.map((c) => (
+                  <li key={c.id} className="text-xs font-bold text-ink/50">
+                    <span className="text-ink/70">{c.summary}</span>
+                    <br />
+                    {new Date(c.at).toLocaleString("en-IN", {
+                      timeZone: "Asia/Kolkata",
+                      hour: "numeric",
+                      minute: "2-digit",
+                      day: "numeric",
+                      month: "short",
+                    })}
+                    {c.by && ` · ${c.by}`}
+                    <span className="ml-1 rounded-full bg-ink/5 px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wide text-ink/40">
+                      {c.tier}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

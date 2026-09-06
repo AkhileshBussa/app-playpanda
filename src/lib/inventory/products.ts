@@ -17,6 +17,7 @@
  */
 
 import { swipeMultipart, swipeRequest } from "../billing/swipe";
+import { changed, recordProductChange, snapshotOf, snapshotOfSwipe } from "./history";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -136,6 +137,72 @@ export async function listStockProducts(): Promise<StockProduct[]> {
     .filter((r) => !NOT_STOCK_CATEGORIES.has(String(r.product_category ?? "").trim()))
     .map(toProduct)
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** One movement of stock, in or out, and the document behind it. */
+export interface StockMovement {
+  /** Swipe's display date, e.g. "05 Sep 2026". */
+  date: string;
+  direction: "in" | "out";
+  qty: number;
+  /** Stock remaining after this movement, as Swipe computed it. */
+  balance: number;
+  /** "invoice" for a sale, "purchase" for a delivery. */
+  documentType: string;
+  /** INV-2265, PINV-15 — the document this movement belongs to. */
+  serialNumber: string;
+  /** Who it went to, or who it came from. */
+  party: string;
+  /** Unit price on that document. */
+  priceInr: number;
+}
+
+/**
+ * Everything that has moved a product's count, newest first.
+ *
+ * Straight from Swipe's own inventory timeline — the same data its product
+ * page shows — so every line maps to a real document rather than to something
+ * this app inferred. That matters: it's what turns "we have 136 socks" into
+ * "and here is every sale and delivery that got us there".
+ */
+export async function listStockMovements(
+  productId: number,
+  limit = 40
+): Promise<StockMovement[]> {
+  const today = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(new Date());
+  // A year back is plenty to see how a line has moved without paging.
+  const [d, m, y] = today.split("/");
+  const from = `${d}-${m}-${Number(y) - 1}`;
+
+  const body = await swipeRequest<{ transactions?: any[] }>("inventory", "timeline", {
+    num_records: limit,
+    page: 0,
+    payment_status: 0,
+    search: "",
+    search_type: "Customer",
+    date: `${from} - ${d}-${m}-${y}`,
+    product_id: productId,
+    variant_id: 0,
+    batch_id: 0,
+    warehouse_id: -1,
+    project_id: [],
+  });
+
+  return (body.transactions ?? []).map((t) => ({
+    date: String(t.transaction_date ?? ""),
+    direction: String(t.stock_option ?? "") === "in" ? "in" : "out",
+    qty: Number(t.qty ?? 0),
+    balance: Number(t.net_qty ?? 0),
+    documentType: String(t.document_type ?? ""),
+    serialNumber: String(t.serial_number ?? ""),
+    party: String(t.name ?? "").trim(),
+    priceInr: Number(t.price ?? 0),
+  }));
 }
 
 /** One product's full record — the shape an edit has to round-trip. */
@@ -264,16 +331,71 @@ function productForm(
   };
 }
 
-/** Add a product to the Swipe catalogue. Names must be unique. */
-export async function createProduct(input: ProductInput): Promise<void> {
-  await swipeMultipart("product", "add", productForm(input));
+/** Who made the change. The tier is verified; the name is what they typed. */
+export interface Actor {
+  name: string;
+  tier: "counter" | "owner";
+}
+
+/**
+ * Add a product to the Swipe catalogue. Names must be unique.
+ *
+ * The history row is written after Swipe accepts it, not before — logging a
+ * creation that was then rejected would be worse than not logging it. It's
+ * also best-effort: a Postgres hiccup must not fail a change Swipe has already
+ * made, or the two would disagree about whether the product exists.
+ */
+export async function createProduct(input: ProductInput, actor: Actor): Promise<void> {
+  const created = await swipeMultipart<{ product_id?: number; id?: number }>(
+    "product",
+    "add",
+    productForm(input)
+  );
+  const newId = Number(created.product_id ?? created.id ?? 0);
+  try {
+    await recordProductChange({
+      swipeProductId: newId,
+      productName: input.name,
+      action: "created",
+      before: null,
+      after: snapshotOf(input),
+      by: actor.name,
+      tier: actor.tier,
+    });
+  } catch (err) {
+    console.error("product history (create) failed:", err);
+  }
 }
 
 /** Edit one, preserving everything the form doesn't set. */
-export async function updateProduct(productId: number, input: ProductInput): Promise<void> {
+export async function updateProduct(
+  productId: number,
+  input: ProductInput,
+  actor: Actor
+): Promise<void> {
   const existing = await getProductDetails(productId);
   if (!existing) throw new Error("Product not found");
+
+  const before = snapshotOfSwipe(existing);
+  const after = snapshotOf(input);
   await swipeMultipart("product", "update", productForm(input, existing));
+
+  // Re-saving the form untouched isn't a change, and logging it would bury the
+  // edits that matter — same rule the cash ledger's history follows.
+  if (!changed(before, after)) return;
+  try {
+    await recordProductChange({
+      swipeProductId: productId,
+      productName: input.name,
+      action: "updated",
+      before,
+      after,
+      by: actor.name,
+      tier: actor.tier,
+    });
+  } catch (err) {
+    console.error("product history (update) failed:", err);
+  }
 }
 
 /* eslint-enable @typescript-eslint/no-explicit-any */
