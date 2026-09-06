@@ -102,14 +102,12 @@ export default function StockBoard({ isAdmin }: { isAdmin: boolean }) {
         >
           + Add
         </button>
-        {isAdmin && (
-          <button
-            onClick={() => setReceiving(true)}
-            className="shrink-0 rounded-full bg-coral px-4 py-2.5 text-sm font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
-          >
-            📥 Receive
-          </button>
-        )}
+        <button
+          onClick={() => setReceiving(true)}
+          className="shrink-0 rounded-full bg-coral px-4 py-2.5 text-sm font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
+        >
+          📥 Receive
+        </button>
       </div>
 
       {loading ? (
@@ -175,6 +173,7 @@ export default function StockBoard({ isAdmin }: { isAdmin: boolean }) {
       {receiving && products && (
         <ReceiveStockSheet
           products={products}
+          staff={staff}
           onClose={() => setReceiving(false)}
           onSaved={() => {
             setReceiving(false);
@@ -533,12 +532,14 @@ const PAYMENT_MODES = ["Cash", "UPI", "Card", "Net Banking", "Cheque"] as const;
  * Each line's cost prefills from what the product last cost, because that's
  * usually still true and a wrong cost is worse than an empty one.
  */
-function ReceiveStockSheet({
+export function ReceiveStockSheet({
   products,
+  staff,
   onClose,
   onSaved,
 }: {
   products: StockProduct[];
+  staff: string[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -547,11 +548,15 @@ function ReceiveStockSheet({
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [paymentMode, setPaymentMode] = useState<(typeof PAYMENT_MODES)[number]>("Cash");
   const [paid, setPaid] = useState(true);
+  const [raisedBy, setRaisedBy] = useState("");
+  /** Set while adding a supplier who isn't on the list yet. */
+  const [newVendor, setNewVendor] = useState<string | null>(null);
+  const [addingVendor, setAddingVendor] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    fetch("/api/ops/stock/received")
+    fetch("/api/ops/purchases/vendors")
       .then((res) => (res.ok ? res.json() : null))
       .then((body) => setVendors(body?.vendors ?? []))
       .catch(() => {});
@@ -576,13 +581,14 @@ function ReceiveStockSheet({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch("/api/ops/stock/received", {
+      const res = await fetch("/api/ops/purchases", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           vendorId: Number(vendorId),
           paymentMode,
           paid,
+          raisedBy,
           lines: lines.map((l) => {
             const p = byId.get(l.productId)!;
             return {
@@ -591,6 +597,7 @@ function ReceiveStockSheet({
               qty: Number(l.qty || 0),
               unitCostWithTax: Number(l.cost || 0),
               taxRatePercent: p.taxRatePercent,
+              unit: p.unit,
             };
           }),
         }),
@@ -608,7 +615,11 @@ function ReceiveStockSheet({
     }
   }
 
-  const valid = vendorId !== "" && lines.length > 0 && lines.every((l) => Number(l.qty) > 0);
+  const valid =
+    vendorId !== "" &&
+    lines.length > 0 &&
+    lines.every((l) => Number(l.qty) > 0) &&
+    (staff.length === 0 || raisedBy !== "");
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto sm:items-center sm:p-4">
@@ -625,21 +636,70 @@ function ReceiveStockSheet({
         <label className="mt-3 block">
           <span className="mb-1.5 block px-1 text-sm font-black text-ink/60">From</span>
           <select
-            value={String(vendorId)}
-            onChange={(e) => setVendorId(e.target.value ? Number(e.target.value) : "")}
+            value={newVendor === null ? String(vendorId) : "new"}
+            onChange={(e) => {
+              if (e.target.value === "new") {
+                setNewVendor("");
+                setVendorId("");
+              } else {
+                setNewVendor(null);
+                setVendorId(e.target.value ? Number(e.target.value) : "");
+              }
+            }}
             className={inputClass}
           >
-            <option value="">Pick a vendor…</option>
+            <option value="">Pick a supplier…</option>
             {vendors.map((v) => (
               <option key={v.id} value={v.id}>
                 {v.name}
               </option>
             ))}
+            <option value="new">+ New supplier…</option>
           </select>
         </label>
-        <p className="mt-1 px-1 text-xs font-bold text-ink/40">
-          A supplier you haven&apos;t bought from before has to be added in Swipe once.
-        </p>
+
+        {/* The first purchase from anyone new used to be the one that couldn't
+            be recorded here at all. */}
+        {newVendor !== null && (
+          <div className="mt-2 flex gap-2">
+            <input
+              value={newVendor}
+              onChange={(e) => setNewVendor(e.target.value)}
+              placeholder="Supplier's name"
+              className={`${inputClass} flex-1`}
+            />
+            <button
+              type="button"
+              disabled={!newVendor.trim() || addingVendor}
+              onClick={async () => {
+                setAddingVendor(true);
+                setError(null);
+                try {
+                  const res = await fetch("/api/ops/purchases/vendors", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name: newVendor.trim() }),
+                  });
+                  const body = await res.json();
+                  if (!res.ok) {
+                    setError(body.error || "Couldn't add the supplier");
+                    return;
+                  }
+                  setVendors([...vendors, body.vendor].sort((a, b) => a.name.localeCompare(b.name)));
+                  setVendorId(body.vendor.id);
+                  setNewVendor(null);
+                } catch {
+                  setError("Network error — please retry");
+                } finally {
+                  setAddingVendor(false);
+                }
+              }}
+              className="shrink-0 rounded-2xl bg-ink px-4 text-sm font-black text-cream disabled:opacity-40"
+            >
+              {addingVendor ? "Adding…" : "Add"}
+            </button>
+          </div>
+        )}
 
         <label className="mt-3 block">
           <span className="mb-1.5 block px-1 text-sm font-black text-ink/60">Add a product</span>
@@ -738,6 +798,26 @@ function ReceiveStockSheet({
             </span>
           </label>
         </div>
+
+        {staff.length > 0 && (
+          <label className="mt-3 block">
+            <span className="mb-1.5 block px-1 text-sm font-black text-ink/60">Received by</span>
+            <select
+              value={raisedBy}
+              onChange={(e) => setRaisedBy(e.target.value)}
+              className={inputClass}
+            >
+              <option value="" disabled>
+                Who took the delivery?
+              </option>
+              {staff.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         {error && <p className="mt-2 px-1 text-sm font-bold text-coral">{error}</p>}
 

@@ -93,6 +93,7 @@ were taken from real requests and verified live.
 | `POST v3/doc/create` | the purchase invoice — same endpoint bookings use |
 | `POST v3/payments/create_payment` | the payment, `payment_type: "out"` |
 | `POST inventory/timeline` | one product's stock movements, mapped to documents |
+| `POST v2/vendor/add` | add a supplier (`force_add_vendor` skips the duplicate interstitial) |
 
 Three things learnt the hard way, all worth not re-discovering:
 
@@ -111,6 +112,23 @@ There is also a `v3/products/update`, found by guessing endpoint names. It takes
 a `products` array, rejects most fields as unknown, and appears nowhere in the
 bundle. Presumably bulk edit. Not used.
 
+## Purchases
+
+[`/ops/purchases`](../src/app/ops/purchases/page.tsx) is the sibling of
+[`/ops/expenses`](./staff-tools.md#2-expenses), and separate from it on
+purpose: an expense is money gone, a purchase is money turned into something on
+the shelf. Lumping them together would overstate what the place costs to run.
+
+A month view with every `PINV-`, its supplier, payment mode and whether it's
+still outstanding, plus **New purchase** — the same sheet as Receive on the
+stock page. The header calls out how much was **paid in cash**, because that's
+the part the drawer felt and the figure that has to agree with the cash
+ledger's "cash spent on stock". They reconcile: ₹1,555 for August, ₹375 for
+September.
+
+Read live from Swipe, no local copy. Totals are owner figures; the counter sees
+what was bought from whom, not what it cost.
+
 ## Receiving stock
 
 Raising a purchase invoice — rather than an expense — is the entire point.
@@ -120,10 +138,19 @@ when the socks sell. See [ledger.md](./ledger.md) for the other half: a
 purchase paid in cash comes off the drawer on its own line, never folded in
 with expenses.
 
-Vendors are the ones already bought from. Swipe exposes no endpoint that lists
-vendor parties, so the list is derived from a year of purchase invoices — no
-loss in practice, since stock comes from the same handful of suppliers. A
-genuinely new supplier has to be added in Swipe once, and the form says so.
+**The counter can raise one.** Same reasoning that opened up the catalogue: the
+person taking the delivery is the one who knows what arrived. With no local
+copy of a purchase to hang a column on, who recorded it rides on the Swipe
+notes as a `[by Name]` suffix and is parsed back when listing — exactly what
+expenses already do, for the same reason.
+
+Vendors are a nuisance. Swipe has a vendor **create** (`v2/vendor/add`) and a
+get-by-id, but nothing that lists them: `utils/get_possible_customers` is a
+customer-side duplicate check and returns nothing for vendors. So the picker is
+built from a year of purchase invoices, which names everyone already bought
+from and misses exactly one case — a supplier just added, who has no purchases
+yet. Those are remembered in our own `vendors` table and unioned in. That table
+is not a mirror: rows appear only for suppliers added through this app.
 
 Verified end to end on 2026-09-06: PINV-16 raised for one unit at ₹1 paid in
 cash, product quantity 0 → 1, the ₹1 appearing against that day on the cash
