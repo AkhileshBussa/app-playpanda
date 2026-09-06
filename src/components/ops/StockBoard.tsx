@@ -37,6 +37,7 @@ export default function StockBoard({ isAdmin }: { isAdmin: boolean }) {
   const [error, setError] = useState<string | null>(null);
   /** The product being edited, or "new" for a fresh one. Owner only. */
   const [editing, setEditing] = useState<StockProduct | "new" | null>(null);
+  const [receiving, setReceiving] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -79,12 +80,20 @@ export default function StockBoard({ isAdmin }: { isAdmin: boolean }) {
           className="min-w-0 flex-1 rounded-full bg-white px-5 py-2.5 text-sm font-bold text-ink shadow-btn outline-none placeholder:font-bold placeholder:text-ink/30 focus:ring-2 focus:ring-coral"
         />
         {isAdmin && (
-          <button
-            onClick={() => setEditing("new")}
-            className="shrink-0 rounded-full bg-coral px-4 py-2.5 text-sm font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
-          >
-            + Add
-          </button>
+          <>
+            <button
+              onClick={() => setEditing("new")}
+              className="shrink-0 rounded-full bg-white px-4 py-2.5 text-sm font-black text-ink/70 shadow-btn transition-all hover:bg-ink/5 active:translate-y-0.5 active:shadow-btn-pressed"
+            >
+              + Add
+            </button>
+            <button
+              onClick={() => setReceiving(true)}
+              className="shrink-0 rounded-full bg-coral px-4 py-2.5 text-sm font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
+            >
+              📥 Receive
+            </button>
+          </>
         )}
       </div>
 
@@ -159,6 +168,17 @@ export default function StockBoard({ isAdmin }: { isAdmin: boolean }) {
             </ul>
           )}
         </>
+      )}
+
+      {receiving && products && (
+        <ReceiveStockSheet
+          products={products}
+          onClose={() => setReceiving(false)}
+          onSaved={() => {
+            setReceiving(false);
+            load();
+          }}
+        />
       )}
 
       {editing && (
@@ -434,6 +454,268 @@ function ProductSheet({
             className="flex-1 rounded-full bg-ink py-3 text-base font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed disabled:opacity-40"
           >
             {busy ? "Saving…" : product ? "Save" : "Add"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+interface Vendor {
+  id: number;
+  name: string;
+}
+
+interface DraftLine {
+  productId: number;
+  qty: string;
+  cost: string;
+}
+
+const PAYMENT_MODES = ["Cash", "UPI", "Card", "Net Banking", "Cheque"] as const;
+
+/**
+ * Recording a delivery.
+ *
+ * This raises a real purchase invoice in Swipe, which is what makes it worth
+ * doing here rather than as an expense: Swipe puts the quantity back on the
+ * product, and the books treat the money as inventory rather than spend. Pay
+ * in cash and it lands on the cash ledger the same evening.
+ *
+ * Vendors are the ones already bought from — Swipe has no endpoint that lists
+ * vendor parties, so the list comes from a year of purchase invoices. In
+ * practice stock comes from the same handful of suppliers, and the form says
+ * plainly that a brand-new one has to be added in Swipe once.
+ *
+ * Each line's cost prefills from what the product last cost, because that's
+ * usually still true and a wrong cost is worse than an empty one.
+ */
+function ReceiveStockSheet({
+  products,
+  onClose,
+  onSaved,
+}: {
+  products: StockProduct[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [vendorId, setVendorId] = useState<number | "">("");
+  const [lines, setLines] = useState<DraftLine[]>([]);
+  const [paymentMode, setPaymentMode] = useState<(typeof PAYMENT_MODES)[number]>("Cash");
+  const [paid, setPaid] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/ops/stock/received")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => setVendors(body?.vendors ?? []))
+      .catch(() => {});
+  }, []);
+
+  const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
+
+  function addLine(productId: number) {
+    if (lines.some((l) => l.productId === productId)) return;
+    const p = byId.get(productId);
+    setLines([
+      ...lines,
+      { productId, qty: "1", cost: p && p.costPrice > 0 ? String(p.costPrice) : "" },
+    ]);
+  }
+
+  const total = lines.reduce((sum, l) => sum + Number(l.qty || 0) * Number(l.cost || 0), 0);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/ops/stock/received", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          vendorId: Number(vendorId),
+          paymentMode,
+          paid,
+          lines: lines.map((l) => {
+            const p = byId.get(l.productId)!;
+            return {
+              productId: l.productId,
+              name: p.name,
+              qty: Number(l.qty || 0),
+              unitCostWithTax: Number(l.cost || 0),
+              taxRatePercent: p.taxRatePercent,
+            };
+          }),
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setError(body.error || "Couldn't save");
+        return;
+      }
+      onSaved();
+    } catch {
+      setError("Network error — please retry");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const valid = vendorId !== "" && lines.length > 0 && lines.every((l) => Number(l.qty) > 0);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto sm:items-center sm:p-4">
+      <div className="absolute inset-0 bg-ink/40" onClick={busy ? undefined : onClose} />
+      <form
+        onSubmit={submit}
+        className="relative w-full max-w-md rounded-t-chunk bg-cream p-5 sm:rounded-chunk"
+      >
+        <h2 className="text-xl font-black text-ink">Receive stock</h2>
+        <p className="mt-0.5 text-sm font-bold text-ink/50">
+          Raises a purchase invoice in Swipe and puts the quantity back on the shelf.
+        </p>
+
+        <label className="mt-3 block">
+          <span className="mb-1.5 block px-1 text-sm font-black text-ink/60">From</span>
+          <select
+            value={String(vendorId)}
+            onChange={(e) => setVendorId(e.target.value ? Number(e.target.value) : "")}
+            className={inputClass}
+          >
+            <option value="">Pick a vendor…</option>
+            {vendors.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="mt-1 px-1 text-xs font-bold text-ink/40">
+          A supplier you haven&apos;t bought from before has to be added in Swipe once.
+        </p>
+
+        <label className="mt-3 block">
+          <span className="mb-1.5 block px-1 text-sm font-black text-ink/60">Add a product</span>
+          <select
+            value=""
+            onChange={(e) => e.target.value && addLine(Number(e.target.value))}
+            className={inputClass}
+          >
+            <option value="">Pick a product…</option>
+            {products.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {lines.length > 0 && (
+          <ul className="mt-3 space-y-2">
+            {lines.map((l) => {
+              const p = byId.get(l.productId);
+              return (
+                <li key={l.productId} className="rounded-2xl bg-white p-3">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="min-w-0 truncate text-sm font-black text-ink">{p?.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => setLines(lines.filter((x) => x.productId !== l.productId))}
+                      className="shrink-0 text-xs font-black text-coral underline-offset-2 hover:underline"
+                    >
+                      remove
+                    </button>
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <input
+                      inputMode="decimal"
+                      value={l.qty}
+                      onChange={(e) =>
+                        setLines(
+                          lines.map((x) =>
+                            x.productId === l.productId
+                              ? { ...x, qty: e.target.value.replace(/[^\d.]/g, "") }
+                              : x
+                          )
+                        )
+                      }
+                      placeholder="Qty"
+                      className="w-20 rounded-xl border-2 border-ink/10 bg-cream/60 px-3 py-2 text-sm font-black text-ink outline-none focus:border-coral"
+                    />
+                    <span className="text-xs font-bold text-ink/40">×</span>
+                    <input
+                      inputMode="decimal"
+                      value={l.cost}
+                      onChange={(e) =>
+                        setLines(
+                          lines.map((x) =>
+                            x.productId === l.productId
+                              ? { ...x, cost: e.target.value.replace(/[^\d.]/g, "") }
+                              : x
+                          )
+                        )
+                      }
+                      placeholder="Cost each"
+                      className="min-w-0 flex-1 rounded-xl border-2 border-ink/10 bg-cream/60 px-3 py-2 text-sm font-bold text-ink outline-none focus:border-coral"
+                    />
+                    <span className="shrink-0 text-sm font-black text-ink/70">
+                      {rupees(Number(l.qty || 0) * Number(l.cost || 0))}
+                    </span>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        <div className="mt-3">
+          <span className="mb-1.5 block px-1 text-sm font-black text-ink/60">Paid by</span>
+          <div className="flex flex-wrap gap-1.5">
+            {PAYMENT_MODES.map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setPaymentMode(m)}
+                className={`rounded-full px-3.5 py-2 text-sm font-black transition-colors ${
+                  paymentMode === m ? "bg-ink text-cream" : "bg-white text-ink/60 hover:bg-ink/10"
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+          <label className="mt-2 flex items-center gap-2 px-1">
+            <input type="checkbox" checked={paid} onChange={(e) => setPaid(e.target.checked)} />
+            <span className="text-sm font-bold text-ink/60">
+              Already paid{paymentMode === "Cash" && paid ? " — comes off the cash ledger" : ""}
+            </span>
+          </label>
+        </div>
+
+        {error && <p className="mt-2 px-1 text-sm font-bold text-coral">{error}</p>}
+
+        <div className="mt-4 flex items-center gap-3">
+          <div>
+            <div className="text-[11px] font-black uppercase tracking-widest text-ink/50">Total</div>
+            <div className="text-2xl font-black leading-tight text-ink">{rupees(total)}</div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full bg-white px-4 py-3 text-base font-black text-ink/60 hover:bg-ink/10"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={busy || !valid}
+            className="flex-1 rounded-full bg-ink py-3 text-base font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed disabled:opacity-40"
+          >
+            {busy ? "Saving…" : "Receive"}
           </button>
         </div>
       </form>
