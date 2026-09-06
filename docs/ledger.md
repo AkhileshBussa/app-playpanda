@@ -11,6 +11,7 @@ counter counted agrees with what the books say it collected.
 opening balance (start of the month)
   + cash declared        what the counter counted at close of play
   − cash spent           expenses raised at /ops/expenses and paid in Cash
+  − cash stock           purchase invoices (PINV-) paid in Cash
   − cash taken out       the owner's draw, a bank deposit
   = cash in store
 ```
@@ -71,6 +72,13 @@ day, who took the cash — asks on the form, exactly as the expenses form does.
 | Opening balance | `cash_months` |
 | **Swipe collected** | Live from Swipe, `getCollectionsByDay` |
 | **Cash spent** | Live from Swipe's expenses, payment mode `Cash` |
+| **Cash stock** | Live from Swipe's purchase invoices, payment mode `Cash` (see [inventory.md](./inventory.md)) |
+
+Stock is not an expense. Buying socks turns cash into an asset and its cost is
+booked when the socks sell, which is why it belongs on a purchase invoice
+(PINV-) and not an expense (EXP-). The drawer doesn't care about the
+distinction — the notes leave either way — so the ledger counts it, on its own
+line, never folded into spend.
 
 Cash spent is dated by the expense's own **date spent** — the field on the
 /ops/expenses form, not the day it was typed in — so a bill entered late still

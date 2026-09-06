@@ -65,6 +65,8 @@ const GROUPS: { key: string; label: string; short: string; items: Tool[] }[] = [
       { href: "/ops/attendance", icon: "🧑‍🤝‍🧑", label: "Staff & leave", also: ["/ops/employees"] },
       { href: "/ops/expenses", icon: "💸", label: "Expenses" },
       { href: "/ops/ledger", icon: "📒", label: "Cash ledger" },
+      { href: "/ops/stock", icon: "📦", label: "Stock" },
+      { href: "/ops/purchases", icon: "🧾", label: "Purchases" },
       { href: "/ops/discounts", icon: "🏷", label: "Discount codes" },
       { href: "/ops/issues", icon: "🔧", label: "Issues & repairs" },
     ],

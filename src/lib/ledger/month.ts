@@ -11,11 +11,19 @@
  *   cash spent  expenses raised at /ops/expenses and paid in Cash. That money
  *               physically left the drawer, so it must come off the balance —
  *               otherwise the ledger drifts by every roll of tape ever bought.
+ *   cash stock  purchase invoices paid in Cash. Buying socks is NOT an
+ *               expense — the money becomes stock and its cost is booked when
+ *               the stock sells — but the notes leave the drawer just the
+ *               same, so the balance must know. Kept on its own line rather
+ *               than folded into spend, because conflating an asset swap with
+ *               a cost is exactly the mistake this separation exists to stop.
  *
- * So: closing = opening + declared cash − cash spent − taken out + put in.
+ * So: closing = opening + declared cash − cash spent − cash stock − taken out
+ *               + put in.
  */
 
 import { billing } from "../billing";
+import { listCashPurchases } from "../inventory/purchases";
 import { listExpenses } from "../staff/expenses";
 import {
   daysBetween,
@@ -36,7 +44,7 @@ import {
   listMovements,
   setOpening,
 } from "./db";
-import type { LedgerDay, LedgerMonth } from "./types";
+import type { LedgerDay, LedgerMonth, StockPurchase } from "./types";
 
 /** How many months a carried-forward opening may chain back through. */
 const MAX_CARRY_MONTHS = 12;
@@ -141,6 +149,21 @@ async function build(month: string, includeTally: boolean, depth: number): Promi
     }
   }
 
+  let stockError: string | null = null;
+  const stock = new Map<string, StockPurchase[]>();
+  if (dates.length) {
+    try {
+      for (const p of await listCashPurchases(startsOn, lastDay)) {
+        const list = stock.get(p.day) ?? [];
+        list.push({ serialNumber: p.serialNumber, vendor: p.vendor, amountInr: p.amountInr });
+        stock.set(p.day, list);
+      }
+    } catch (err) {
+      console.error("ledger: cash stock purchases unavailable:", err);
+      stockError = "Stock bought with cash couldn't be read from Swipe — the balance below is before it.";
+    }
+  }
+
   let tallyError: string | null = null;
   const tallies = new Map<string, { cash: number; card: number; upi: number; other: number }>();
   if (includeTally && dates.length) {
@@ -161,6 +184,7 @@ async function build(month: string, includeTally: boolean, depth: number): Promi
     tallyCash: includeTally && !tallyError ? 0 : null,
     tallyOnline: includeTally && !tallyError ? 0 : null,
     cashSpent: 0,
+    cashStock: 0,
     cashTakenOut: 0,
     cashPutIn: 0,
   } as LedgerMonth["totals"];
@@ -173,6 +197,8 @@ async function build(month: string, includeTally: boolean, depth: number): Promi
     const declared = declaredByDay.get(date) ?? null;
     const dayMovements = movements.filter((m) => m.day === date);
     const cashSpent = spent.get(date) ?? 0;
+    const stockBought = stock.get(date) ?? [];
+    const cashStock = stockBought.reduce((sum, p) => sum + p.amountInr, 0);
 
     const takenOut = dayMovements
       .filter((m) => m.direction === "out")
@@ -181,7 +207,7 @@ async function build(month: string, includeTally: boolean, depth: number): Promi
       .filter((m) => m.direction === "in")
       .reduce((sum, m) => sum + m.amountInr, 0);
 
-    balance += (declared?.cashInr ?? 0) - cashSpent - takenOut + putIn;
+    balance += (declared?.cashInr ?? 0) - cashSpent - cashStock - takenOut + putIn;
 
     // Today is still being traded — it isn't "missing", it's not closed yet.
     if (!declared && date < today) missingDays.push(date);
@@ -200,6 +226,7 @@ async function build(month: string, includeTally: boolean, depth: number): Promi
       totals.tallyOnline += tally.online;
     }
     totals.cashSpent += cashSpent;
+    totals.cashStock += cashStock;
     totals.cashTakenOut += takenOut;
     totals.cashPutIn += putIn;
 
@@ -208,6 +235,8 @@ async function build(month: string, includeTally: boolean, depth: number): Promi
       declared,
       tally,
       cashSpentInr: cashSpent,
+      cashStockInr: cashStock,
+      stockBought,
       movements: dayMovements,
       closingInr: balance,
       edits: (editsByDay.get(date) ?? []).filter((e) => e.entity !== "opening"),
@@ -229,6 +258,7 @@ async function build(month: string, includeTally: boolean, depth: number): Promi
     cashInStoreInr: balance,
     tallyError,
     expensesError,
+    stockError,
   };
 }
 
