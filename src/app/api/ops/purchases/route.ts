@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { isAdminAuthed, isOpsAuthed } from "@/lib/ops/auth";
-import { listPurchases, recordStockReceived } from "@/lib/inventory/purchases";
+import {
+  deletePurchase,
+  listPurchases,
+  readPurchase,
+  recordStockReceived,
+} from "@/lib/inventory/purchases";
 import { isMonth, istToday, monthEnd, monthLabel, monthStart } from "@/lib/ledger/dates";
 
 export const dynamic = "force-dynamic";
@@ -17,6 +22,19 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   if (!(await isOpsAuthed())) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // ?ref= reads one purchase back in the shape the edit form wants.
+  const ref = new URL(req.url).searchParams.get("ref")?.trim();
+  if (ref) {
+    try {
+      const purchase = await readPurchase(ref);
+      if (!purchase) return NextResponse.json({ error: "Not found" }, { status: 404 });
+      return NextResponse.json({ purchase });
+    } catch (err) {
+      console.error("purchase read failed:", err);
+      return NextResponse.json({ error: "Couldn't read that purchase" }, { status: 502 });
+    }
   }
 
   const param = new URL(req.url).searchParams.get("month");
@@ -57,7 +75,6 @@ const purchaseSchema = z.object({
     .max(50),
   paymentMode: z.enum(["Cash", "UPI", "Card", "Net Banking", "Cheque"]),
   paid: z.boolean().default(true),
-  raisedBy: z.string().trim().max(60).default(""),
 });
 
 export async function POST(req: Request) {
@@ -79,6 +96,75 @@ export async function POST(req: Request) {
   } catch (err) {
     console.error("purchase create failed:", err);
     const message = err instanceof Error ? err.message : "Swipe rejected the purchase";
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
+}
+
+/**
+ * Rewrite a purchase in place — same document, same serial.
+ *
+ * The counter may, as with raising one: a delivery short by two bottles is
+ * noticed at the counter, not in an office. Removing a purchase outright is a
+ * different act and stays owner-only, exactly as with the cash ledger's
+ * withdrawals.
+ */
+const editSchema = purchaseSchema.extend({
+  ref: z.string().trim().min(1),
+  docId: z.number().int().positive(),
+  docNumber: z.number().int().positive(),
+  serialNumber: z.string().trim().min(1),
+});
+
+export async function PATCH(req: Request) {
+  if (!(await isOpsAuthed())) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  let input: z.infer<typeof editSchema>;
+  try {
+    input = editSchema.parse(await req.json());
+  } catch (err) {
+    const message = err instanceof z.ZodError ? err.issues[0]?.message : "Invalid request";
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
+
+  try {
+    const result = await recordStockReceived({
+      ...input,
+      editDocId: input.docId,
+      editDocNumber: input.docNumber,
+      editSerialNumber: input.serialNumber,
+    });
+    return NextResponse.json(result);
+  } catch (err) {
+    console.error("purchase edit failed:", err);
+    const message = err instanceof Error ? err.message : "Swipe rejected the change";
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
+}
+
+/**
+ * Delete a purchase. Owner only.
+ *
+ * It takes the stock back off the shelf and, if it was paid in cash, moves the
+ * drawer's balance — correctly, since money that never left shouldn't be
+ * counted as gone. That's a bigger consequence than mistyping a quantity, and
+ * the same reasoning that keeps removing a logged withdrawal owner-only.
+ */
+export async function DELETE(req: Request) {
+  if (!(await isAdminAuthed())) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const ref = new URL(req.url).searchParams.get("ref")?.trim();
+  if (!ref) return NextResponse.json({ error: "Missing ref" }, { status: 400 });
+
+  try {
+    await deletePurchase(ref, "Removed from Play Panda ops");
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error("purchase delete failed:", err);
+    const message = err instanceof Error ? err.message : "Swipe wouldn't remove it";
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }

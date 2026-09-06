@@ -94,6 +94,8 @@ were taken from real requests and verified live.
 | `POST v3/payments/create_payment` | the payment, `payment_type: "out"` |
 | `POST inventory/timeline` | one product's stock movements, mapped to documents |
 | `POST v2/vendor/add` | add a supplier (`force_add_vendor` skips the duplicate interstitial) |
+| `POST v2/doc/get_invoice` | read a purchase back, with its lines, for the edit form |
+| `POST doc/delete` | remove a purchase (`document_type: "purchase"`) |
 
 Three things learnt the hard way, all worth not re-discovering:
 
@@ -138,11 +140,24 @@ when the socks sell. See [ledger.md](./ledger.md) for the other half: a
 purchase paid in cash comes off the drawer on its own line, never folded in
 with expenses.
 
-**The counter can raise one.** Same reasoning that opened up the catalogue: the
-person taking the delivery is the one who knows what arrived. With no local
-copy of a purchase to hang a column on, who recorded it rides on the Swipe
-notes as a `[by Name]` suffix and is parsed back when listing — exactly what
-expenses already do, for the same reason.
+**The counter can raise one, and edit one.** Same reasoning that opened up the
+catalogue: the person taking the delivery is the one who knows what arrived,
+and a delivery short by two bottles is noticed at the counter rather than in an
+office. Swipe stamps its own creator on the document, so no separate "who"
+field is asked for.
+
+An edit rewrites the purchase in place — same serial, same document — through
+the numeric-`id` mechanism the invoice edit and discount flows already use. The
+list doesn't carry line items, so the form reads the purchase back first rather
+than editing from a guess and dropping them.
+
+**Deleting is owner-only**, matching the cash ledger's rule for withdrawals.
+Two consequences catch people out and neither is undone by it: the stock the
+purchase added comes back off the shelf, and a cash purchase stops counting
+against the drawer — correct, since money that never left shouldn't be counted
+as gone. Swipe also reuses the freed serial on the next purchase, so numbering
+looks continuous rather than showing a gap. The confirmation says all of this
+before it happens.
 
 Vendors are a nuisance. Swipe has a vendor **create** (`v2/vendor/add`) and a
 get-by-id, but nothing that lists them: `utils/get_possible_customers` is a

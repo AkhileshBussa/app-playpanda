@@ -170,8 +170,10 @@ export interface StockReceivedInput {
   paymentMode: "Cash" | "UPI" | "Card" | "Net Banking" | "Cheque";
   /** False leaves the purchase outstanding against the vendor. */
   paid: boolean;
-  /** Who recorded it. Stored on the Swipe notes; see the note in the builder. */
-  raisedBy?: string;
+  /** Set to rewrite an existing purchase rather than mint a new one. */
+  editDocId?: number;
+  editDocNumber?: number;
+  editSerialNumber?: string;
 }
 
 /** The bank the counter records against (HDFC — bank_id 1 in this account). */
@@ -233,13 +235,18 @@ export async function recordStockReceived(
 ): Promise<{ serialNumber: string }> {
   if (input.lines.length === 0) throw new Error("Nothing to receive");
 
-  const serial = await swipeRequest<{ doc_number?: number; default_prefix?: string }>(
-    "utils",
-    "get_prefix_seral_number",
-    { prefix: "PINV-", document_type: "purchase", suffix: "", is_prefix: true }
-  );
-  const docNumber = Number(serial.doc_number ?? 0);
-  const serialNumber = `${serial.default_prefix ?? "PINV-"}${docNumber}`;
+  // An edit keeps the document's own serial; only a new one needs the next.
+  let docNumber = input.editDocNumber ?? 0;
+  let serialNumber = input.editSerialNumber ?? "";
+  if (!input.editDocId) {
+    const serial = await swipeRequest<{ doc_number?: number; default_prefix?: string }>(
+      "utils",
+      "get_prefix_seral_number",
+      { prefix: "PINV-", document_type: "purchase", suffix: "", is_prefix: true }
+    );
+    docNumber = Number(serial.doc_number ?? 0);
+    serialNumber = `${serial.default_prefix ?? "PINV-"}${docNumber}`;
+  }
 
   const items = input.lines.map(purchaseItem);
   const totalAmount = round2(items.reduce((sum, i) => sum + i.total_amount, 0));
@@ -251,7 +258,9 @@ export async function recordStockReceived(
     "v3/doc",
     "create",
     {
-      id: -1,
+      // -1 mints a new document; a real numeric id rewrites that one in place.
+      // Same mechanism the invoice edit and discount flows already use.
+      id: input.editDocId ?? -1,
       project_id: -1,
       document_type: "purchase",
       invoice_type: "b2b",
@@ -286,11 +295,7 @@ export async function recordStockReceived(
       start_subscription_on_payment: 1,
       bank_id: DEFAULT_BANK_ID,
       terms: "",
-      // With no local copy of a purchase to hang a column on, the person who
-      // raised it rides on the notes as a "[by Name]" suffix and is parsed
-      // back out when listing. Reads fine inside Swipe's own UI too — exactly
-      // what ../staff/expenses.ts does, for the same reason.
-      notes: input.raisedBy ? `Stock received via Play Panda ops [by ${input.raisedBy}]` : "Stock received via Play Panda ops",
+      notes: "Stock received via Play Panda ops",
       reference: "",
       is_draft: false,
       is_pos: false,
@@ -389,6 +394,12 @@ export async function recordStockReceived(
 const RAISED_BY_RE = /\s*\[by ([^\][]+)\]\s*$/;
 
 export interface PurchaseRecord {
+  /** Swipe's stable document handle — what edit and delete address. */
+  ref: string;
+  /** Swipe's numeric document id; setting it on a create IS the edit. */
+  docId: number;
+  docNumber: number;
+  vendorId: number;
   serialNumber: string;
   /** As Swipe returns it, e.g. "05 Sep 2026". */
   date: string;
@@ -421,6 +432,10 @@ export async function listPurchases(from: string, to: string): Promise<PurchaseM
     const by = notes.match(RAISED_BY_RE);
     const payments = Array.isArray(row.payments) ? row.payments : [];
     return {
+      ref: String(row.new_hash_id ?? ""),
+      docId: Number(row.id ?? 0),
+      docNumber: Number(row.doc_count ?? 0),
+      vendorId: Number(row.customer?.vendor_id ?? row.customer?.customer_id ?? 0),
       serialNumber: String(row.serial_number ?? ""),
       date: String(row.invoice_date ?? ""),
       vendor: vendorName(row),
@@ -528,6 +543,81 @@ async function rememberVendor(swipeVendorId: number, name: string): Promise<void
        SET name = EXCLUDED.name, last_updated_at = now()`,
     [randomUUID(), appEnvironment(), String(swipeVendorId), name]
   );
+}
+
+// ── Reading one back, and removing it ────────────────────────────────────────
+
+export interface PurchaseDetail {
+  ref: string;
+  docId: number;
+  docNumber: number;
+  serialNumber: string;
+  vendorId: number;
+  vendor: string;
+  paymentModes: string[];
+  paid: boolean;
+  lines: Array<{
+    productId: number;
+    name: string;
+    qty: number;
+    unitCostWithTax: number;
+    taxRatePercent: number;
+    unit: string;
+  }>;
+}
+
+/** One purchase, in the shape the form edits. */
+export async function readPurchase(ref: string): Promise<PurchaseDetail | null> {
+  const body = await swipeRequest<{ invoice_details?: any }>("v2/doc", "get_invoice", {
+    new_hash_id: ref,
+    document_type: "purchase",
+    is_pdf: false,
+  });
+  const inv = body.invoice_details;
+  if (!inv) return null;
+
+  const party = inv.customer ?? inv.party ?? {};
+  const payments = Array.isArray(inv.payments) ? inv.payments : [];
+
+  return {
+    ref,
+    docId: Number(inv.id ?? 0),
+    docNumber: Number(inv.doc_number ?? inv.doc_count ?? 0),
+    serialNumber: String(inv.serial_number ?? ""),
+    vendorId: Number(party.vendor_id ?? party.customer_id ?? 0),
+    vendor: String(party.company_name || party.name || "").trim(),
+    paymentModes: [
+      ...new Set(payments.map((p: any) => String(p.payment_mode ?? "")).filter(Boolean)),
+    ] as string[],
+    paid: payments.length > 0,
+    lines: (Array.isArray(inv.items) ? inv.items : []).map((i: any) => ({
+      productId: Number(i.product_id ?? 0),
+      name: String(i.product_name ?? ""),
+      qty: Number(i.qty ?? 0),
+      // price_with_tax is per unit, which is what the form asks for.
+      unitCostWithTax: Number(i.price_with_tax ?? 0),
+      taxRatePercent: Number(i.tax ?? 0),
+      unit: String(i.unit ?? i.item_unit ?? ""),
+    })),
+  };
+}
+
+/**
+ * Remove a purchase.
+ *
+ * Consequences worth knowing, because none of them are undone by this: the
+ * stock it added comes back off, and if it was paid in cash the drawer's
+ * balance moves — correctly, since money that never left shouldn't be counted
+ * as gone. Swipe also reuses the freed serial on the next purchase, so the
+ * numbering will look continuous rather than showing a gap.
+ */
+export async function deletePurchase(ref: string, remarks: string): Promise<void> {
+  await swipeRequest("doc", "delete", {
+    new_hash_id: ref,
+    document_type: "purchase",
+    remarks,
+    notify_customer: false,
+  });
 }
 
 /* eslint-enable @typescript-eslint/no-explicit-any */

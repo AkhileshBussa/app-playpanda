@@ -173,7 +173,6 @@ export default function StockBoard({ isAdmin }: { isAdmin: boolean }) {
       {receiving && products && (
         <ReceiveStockSheet
           products={products}
-          staff={staff}
           onClose={() => setReceiving(false)}
           onSaved={() => {
             setReceiving(false);
@@ -532,23 +531,44 @@ const PAYMENT_MODES = ["Cash", "UPI", "Card", "Net Banking", "Cheque"] as const;
  * Each line's cost prefills from what the product last cost, because that's
  * usually still true and a wrong cost is worse than an empty one.
  */
+export interface EditingPurchase {
+  ref: string;
+  docId: number;
+  docNumber: number;
+  serialNumber: string;
+  vendorId: number;
+  paid: boolean;
+  paymentModes: string[];
+  lines: Array<{ productId: number; qty: number; unitCostWithTax: number }>;
+}
+
 export function ReceiveStockSheet({
   products,
-  staff,
+  editing,
   onClose,
   onSaved,
 }: {
   products: StockProduct[];
-  staff: string[];
+  /** Set to rewrite an existing purchase instead of raising a new one. */
+  editing?: EditingPurchase | null;
   onClose: () => void;
   onSaved: () => void;
 }) {
   const [vendors, setVendors] = useState<Vendor[]>([]);
-  const [vendorId, setVendorId] = useState<number | "">("");
-  const [lines, setLines] = useState<DraftLine[]>([]);
-  const [paymentMode, setPaymentMode] = useState<(typeof PAYMENT_MODES)[number]>("Cash");
-  const [paid, setPaid] = useState(true);
-  const [raisedBy, setRaisedBy] = useState("");
+  const [vendorId, setVendorId] = useState<number | "">(editing?.vendorId ?? "");
+  const [lines, setLines] = useState<DraftLine[]>(
+    editing
+      ? editing.lines.map((l) => ({
+          productId: l.productId,
+          qty: String(l.qty),
+          cost: String(l.unitCostWithTax),
+        }))
+      : []
+  );
+  const [paymentMode, setPaymentMode] = useState<(typeof PAYMENT_MODES)[number]>(
+    (editing?.paymentModes[0] as (typeof PAYMENT_MODES)[number]) ?? "Cash"
+  );
+  const [paid, setPaid] = useState(editing ? editing.paid : true);
   /** Set while adding a supplier who isn't on the list yet. */
   const [newVendor, setNewVendor] = useState<string | null>(null);
   const [addingVendor, setAddingVendor] = useState(false);
@@ -582,13 +602,20 @@ export function ReceiveStockSheet({
     setError(null);
     try {
       const res = await fetch("/api/ops/purchases", {
-        method: "POST",
+        method: editing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           vendorId: Number(vendorId),
           paymentMode,
           paid,
-          raisedBy,
+          ...(editing
+            ? {
+                ref: editing.ref,
+                docId: editing.docId,
+                docNumber: editing.docNumber,
+                serialNumber: editing.serialNumber,
+              }
+            : {}),
           lines: lines.map((l) => {
             const p = byId.get(l.productId)!;
             return {
@@ -618,8 +645,7 @@ export function ReceiveStockSheet({
   const valid =
     vendorId !== "" &&
     lines.length > 0 &&
-    lines.every((l) => Number(l.qty) > 0) &&
-    (staff.length === 0 || raisedBy !== "");
+    lines.every((l) => Number(l.qty) > 0);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto sm:items-center sm:p-4">
@@ -628,9 +654,13 @@ export function ReceiveStockSheet({
         onSubmit={submit}
         className="relative w-full max-w-md rounded-t-chunk bg-cream p-5 sm:rounded-chunk"
       >
-        <h2 className="text-xl font-black text-ink">Receive stock</h2>
+        <h2 className="text-xl font-black text-ink">
+          {editing ? `Edit ${editing.serialNumber}` : "Receive stock"}
+        </h2>
         <p className="mt-0.5 text-sm font-bold text-ink/50">
-          Raises a purchase invoice in Swipe and puts the quantity back on the shelf.
+          {editing
+            ? "Rewrites the purchase in place — same serial, same document. Stock and the cash ledger follow the new figures."
+            : "Raises a purchase invoice in Swipe and puts the quantity back on the shelf."}
         </p>
 
         <label className="mt-3 block">
@@ -799,25 +829,6 @@ export function ReceiveStockSheet({
           </label>
         </div>
 
-        {staff.length > 0 && (
-          <label className="mt-3 block">
-            <span className="mb-1.5 block px-1 text-sm font-black text-ink/60">Received by</span>
-            <select
-              value={raisedBy}
-              onChange={(e) => setRaisedBy(e.target.value)}
-              className={inputClass}
-            >
-              <option value="" disabled>
-                Who took the delivery?
-              </option>
-              {staff.map((n) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
 
         {error && <p className="mt-2 px-1 text-sm font-bold text-coral">{error}</p>}
 
@@ -838,7 +849,7 @@ export function ReceiveStockSheet({
             disabled={busy || !valid}
             className="flex-1 rounded-full bg-ink py-3 text-base font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed disabled:opacity-40"
           >
-            {busy ? "Saving…" : "Receive"}
+            {busy ? "Saving…" : editing ? "Save changes" : "Receive"}
           </button>
         </div>
       </form>
