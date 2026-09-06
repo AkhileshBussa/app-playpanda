@@ -16,7 +16,7 @@
  * never be treated as "the whole catalogue".
  */
 
-import { swipeRequest } from "../billing/swipe";
+import { swipeMultipart, swipeRequest } from "../billing/swipe";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -144,6 +144,136 @@ export async function getProductDetails(productId: number): Promise<Record<strin
     product_id: productId,
   });
   return body.product_details?.[0] ?? null;
+}
+
+// ── Writing ──────────────────────────────────────────────────────────────────
+
+/**
+ * Creating and editing products.
+ *
+ * Both go through multipart form posts that Swipe's own product form uses —
+ * `product/add` to create, `product/update` to edit — and both take the SAME
+ * wide field set. Neither is documented and neither appears in Swipe's web
+ * bundle under a name you could guess; the shapes below were taken from the
+ * real requests and verified live (product 207: low_stock 0 → 5, cost 0 → 6,
+ * with every other field left untouched).
+ *
+ * Two things learnt the hard way, both worth not re-discovering:
+ *
+ *  - `product/add` is CREATE ONLY. Posting an edit to it, id and all, is
+ *    rejected with "Product with this name already exists" — it never looks at
+ *    the id. Editing must go to `product/update`.
+ *  - An edit is a FULL REPLACEMENT: whatever the form doesn't send is lost.
+ *    So updateProduct reads the product back first and overlays the caller's
+ *    changes on the real record, rather than assembling one from defaults.
+ *    That's why opening stock, the price-with-tax flag and the custom columns
+ *    are round-tripped rather than hardcoded — getting any of them wrong would
+ *    silently rewrite a product nobody meant to touch.
+ *
+ * (There is also a v3/products/update, found by guessing endpoint names. It
+ * takes a `products` array, rejects most fields as unknown, appears nowhere in
+ * the web bundle, and is presumably for bulk edit. Not used.)
+ */
+
+/** What a caller may set. Anything absent keeps the product's current value. */
+export interface ProductInput {
+  name: string;
+  /** Tax-inclusive selling price, INR. */
+  priceWithTax: number;
+  taxRatePercent: number;
+  unit: string;
+  category?: string;
+  /** What a unit costs us, INR. */
+  costPrice?: number;
+  /** Reorder level; 0 for none. */
+  lowStockAt?: number;
+  hsnCode?: string;
+}
+
+/** The custom-column ids this account defines, all blank for a stock item. */
+const BLANK_CUSTOM_FIELDS = encodeURIComponent(JSON.stringify({ "12": "", "13": "", "15": "" }));
+
+const bool = (v: unknown) => (v ? "true" : "false");
+const num = (v: unknown) => String(Number(v ?? 0));
+
+/**
+ * The form Swipe's product editor posts. `existing` is the current record for
+ * an edit (so untouched fields survive) and undefined for a create.
+ */
+function productForm(
+  input: ProductInput,
+  existing?: Record<string, any> | null
+): Record<string, string> {
+  const id = existing ? String(existing.product_id ?? existing.id ?? "") : "";
+  // Preserve how THIS product quotes its price. Forcing tax-inclusive would
+  // silently re-price every product that quotes ex-tax.
+  const priceWithTax = existing ? Boolean(existing.is_price_with_tax) : true;
+
+  return {
+    company_id: "",
+    description: String(existing?.description ?? "<p><br></p>"),
+    hsn_code: String(input.hsnCode ?? existing?.hsn_code ?? ""),
+    id,
+    key: "",
+    price: String(input.priceWithTax),
+    discount_amount: num(existing?.discount_amount),
+    is_price_with_tax: bool(priceWithTax),
+    product_category: String(input.category ?? existing?.product_category ?? ""),
+    product_name: input.name,
+    product_type: String(existing?.product_type ?? "Product"),
+    tax: String(input.taxRatePercent),
+    barcode_id: String(existing?.barcode_id ?? ""),
+    avg_purchase_price: "",
+    purchase_price: num(input.costPrice ?? existing?.purchase_price),
+    purchase_unit_price: num(input.costPrice ?? existing?.purchase_unit_price),
+    image: "",
+    show_online: bool(existing ? existing.show_online : true),
+    product_id: id,
+    has_alternative_units: bool(existing?.has_alternative_units),
+    product_unit: "",
+    cess: num(existing?.cess),
+    not_for_sale: bool(existing?.not_for_sale),
+    discount: num(existing?.discount),
+    discountAmount: num(existing?.discount_amount),
+    show_discount_in: num(existing?.show_discount_in),
+    has_batches: num(existing?.has_batches),
+    // Opening stock is history, not something this form edits — round-trip it
+    // or an edit would rewrite what the product started with.
+    opening_qty: num(existing?.opening_qty),
+    opening_purchase_price: num(existing?.opening_purchase_price),
+    opening_value: num(existing?.opening_value),
+    cess_on_qty: num(existing?.cess_on_qty),
+    low_stock: num(input.lowStockAt ?? existing?.low_stock),
+    cess_non_advl_rate: "",
+    branch_price_confirmation_showed: "false",
+    combo_items: "[]",
+    visibility: "1",
+    has_serial_number: "",
+    unit: input.unit || String(existing?.unit ?? "PCS"),
+    "Number of Hours": String(existing?.["Number of Hours"] ?? ""),
+    "Number of Plays": String(existing?.["Number of Plays"] ?? ""),
+    "Validity (in Months)": String(existing?.["Validity (in Months)"] ?? ""),
+    is_purchase_price_with_tax: bool(existing ? existing.is_purchase_price_with_tax : true),
+    max_product_discount: "null",
+    tax_type: "",
+    is_update_prices: "true",
+    custom_fields: BLANK_CUSTOM_FIELDS,
+    variants: "[]",
+    has_multiple_tax: num(existing?.has_multiple_tax),
+    multiple_tax_rates: "[]",
+  };
+}
+
+/** Add a product to the Swipe catalogue. Names must be unique. */
+export async function createProduct(input: ProductInput): Promise<void> {
+  await swipeMultipart("product", "add", productForm(input));
+}
+
+/** Edit one, preserving everything the form doesn't set. */
+export async function updateProduct(productId: number, input: ProductInput): Promise<void> {
+  const existing = await getProductDetails(productId);
+  if (!existing) throw new Error("Product not found");
+  await swipeMultipart("product", "update", productForm(input, existing));
 }
 
 /* eslint-enable @typescript-eslint/no-explicit-any */

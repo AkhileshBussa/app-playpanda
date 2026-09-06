@@ -150,6 +150,36 @@ export async function swipeRequest<T extends object>(
   return swipeCall<T & SwipeResponse>(prefix, action, payload);
 }
 
+/**
+ * Same transport again, for the Swipe endpoints that take multipart/form-data
+ * rather than JSON — the product editor is the only one so far.
+ *
+ * Content-Type is deliberately NOT set: fetch has to write it itself so the
+ * multipart boundary matches the body it generates.
+ */
+export async function swipeMultipart<T extends object>(
+  prefix: string,
+  action: string,
+  fields: Record<string, string>
+): Promise<T> {
+  const token = await getSwipeToken();
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields)) form.append(key, value);
+
+  const res = await fetch(`${SWIPE_BASE_URL}/${prefix}/${action}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+    cache: "no-store",
+  });
+  const body = (await res.json().catch(() => ({}))) as T & SwipeResponse;
+  if (!res.ok || body.success === false) {
+    console.error(`Swipe ${prefix}/${action} failed (${res.status}):`, JSON.stringify(body));
+    throw new SwipeError(body.message || `Swipe API error (${res.status})`, res.status, body);
+  }
+  return body;
+}
+
 /** Today's date in IST, DD-MM-YYYY — the format Swipe expects. */
 function swipeDateToday(): string {
   const parts = new Intl.DateTimeFormat("en-GB", {
