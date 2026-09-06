@@ -60,6 +60,13 @@ export interface LedgerEdit {
   summary: string;
 }
 
+/** A cash-paid stock purchase, shown against the day its money moved. */
+export interface StockPurchase {
+  serialNumber: string;
+  vendor: string;
+  amountInr: number;
+}
+
 export interface LedgerDay {
   date: string;
   declared: DayDeclaration | null;
@@ -70,6 +77,10 @@ export interface LedgerDay {
   tally: DayTally | null;
   /** Cash spent out of the drawer that day (Swipe expenses paid in Cash). */
   cashSpentInr: number;
+  /** Cash that went on STOCK that day — an asset swap, not an expense. */
+  cashStockInr: number;
+  /** The purchases behind cashStockInr, so a figure traces to a document. */
+  stockBought: StockPurchase[];
   movements: CashMovement[];
   /** Cash in the store at the end of this day. */
   closingInr: number;
@@ -98,6 +109,7 @@ export interface LedgerMonth {
     tallyCash: number | null;
     tallyOnline: number | null;
     cashSpent: number;
+    cashStock: number;
     cashTakenOut: number;
     cashPutIn: number;
   };
@@ -109,4 +121,6 @@ export interface LedgerMonth {
   tallyError: string | null;
   /** Set when cash expenses couldn't be fetched — the balance is then pre-expenses. */
   expensesError: string | null;
+  /** Set when cash stock purchases couldn't be fetched. */
+  stockError: string | null;
 }

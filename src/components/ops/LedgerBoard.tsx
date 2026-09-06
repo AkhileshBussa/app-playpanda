@@ -187,6 +187,9 @@ export default function LedgerBoard({ isAdmin }: { isAdmin: boolean }) {
               />
               <Line label="Cash declared" value={`+ ${rupees(data.totals.declaredCash)}`} />
               <Line label="Cash spent on expenses" value={`− ${rupees(data.totals.cashSpent)}`} />
+              {/* Stock is not spend — the money became socks — but it left the
+                  drawer, so it belongs in this sum on a line of its own. */}
+              <Line label="Cash spent on stock" value={`− ${rupees(data.totals.cashStock)}`} />
               <Line label="Cash taken out" value={`− ${rupees(data.totals.cashTakenOut)}`} />
             </dl>
 
@@ -205,6 +208,7 @@ export default function LedgerBoard({ isAdmin }: { isAdmin: boolean }) {
             </Notice>
           )}
           {data.expensesError && <Notice tone="coral">{data.expensesError}</Notice>}
+          {data.stockError && <Notice tone="coral">{data.stockError}</Notice>}
           {data.tallyError && <Notice tone="coral">{data.tallyError}</Notice>}
 
           {data.days.length === 0 ? (
@@ -469,7 +473,7 @@ function DayCard({
         <p className="mt-1.5 text-sm font-bold text-ink/50">{day.declared.note}</p>
       )}
 
-      {(day.cashSpentInr > 0 || day.movements.length > 0) && (
+      {(day.cashSpentInr > 0 || day.cashStockInr > 0 || day.movements.length > 0) && (
         <ul className="mt-2.5 space-y-1 border-t-2 border-ink/5 pt-2">
           {day.cashSpentInr > 0 && (
             <li className="flex items-baseline justify-between gap-3 text-sm font-bold text-ink/50">
@@ -477,6 +481,21 @@ function DayCard({
               <span className="shrink-0 font-black text-ink/70">− {rupees(day.cashSpentInr)}</span>
             </li>
           )}
+          {/* Named, not just totalled: "what did that ₹375 go on" is the first
+              thing anyone asks of a stock figure, and the PINV- serial takes
+              them straight to the document. */}
+          {day.stockBought.map((p) => (
+            <li
+              key={p.serialNumber}
+              className="flex items-baseline justify-between gap-3 text-sm font-bold text-ink/50"
+            >
+              <span className="min-w-0 truncate">
+                Stock · {p.vendor}
+                <span className="ml-1.5 text-xs font-bold text-ink/30">{p.serialNumber}</span>
+              </span>
+              <span className="shrink-0 font-black text-ink/70">− {rupees(p.amountInr)}</span>
+            </li>
+          ))}
           {day.movements.map((m) => (
             <MovementRow
               key={m.id}
