@@ -22,7 +22,7 @@ import { appEnvironment, ensureSchema } from "../db/schema";
 import { upsertCustomer, type UpsertCustomerInput } from "../customers/db";
 import { ensureProduct, type ProductKind } from "../products/db";
 
-export type InvoiceSource = "app" | "counter" | "membership_punch" | "external";
+export type InvoiceSource = "app" | "counter" | "membership_sale" | "membership_punch" | "external";
 export type InvoiceStatus = "unpaid" | "part_paid" | "paid" | "cancelled";
 
 export interface MirrorLine {

@@ -1,11 +1,21 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { isOpsAuthed } from "@/lib/ops/auth";
-import { todayIST } from "@/lib/ops/state";
+import { bumpBoard, todayIST } from "@/lib/ops/state";
+import { billing } from "@/lib/billing";
+import { PAYMENT_METHODS } from "@/lib/billing/types";
 import { createMembership, listMembershipsByPhone, membersDbConfigured } from "@/lib/members/db";
-import { addMonths, getPlan, getPunchProduct, MEMBERSHIP_PLANS } from "@/lib/members/plans";
+import {
+  addMonths,
+  getPlan,
+  getPunchProduct,
+  getSaleProductFor,
+  MEMBERSHIP_PLANS,
+} from "@/lib/members/plans";
 import { membershipStatus, normalizePhone } from "@/lib/members/types";
 import { mirrorMembership } from "@/lib/members/sheets";
+import { recordInvoice, recordPaymentMirror } from "@/lib/invoices/db";
+import { dbConfigured } from "@/lib/pg";
 
 export const dynamic = "force-dynamic";
 
@@ -31,14 +41,19 @@ const createSchema = z.object({
   kidNames: z.string().trim().max(200).default(""),
   planKey: z.enum([...fixedKeys, "custom"]),
   custom: customSchema.optional(),
+  saleMode: z.enum(["bill", "link"]).default("bill"),
+  priceInr: z.number().min(0).max(500000).nullable().default(null),
+  paymentMethod: z.enum(PAYMENT_METHODS).optional(),
+  transactionRef: z.string().trim().max(60).default(""),
   saleInvoiceNumber: z.string().trim().max(30).default(""),
   startsOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid start date").optional(),
+  createdOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid created date").optional(),
   notes: z.string().trim().max(500).default(""),
   /** Set after the duplicate warning to create anyway. */
   force: z.boolean().optional(),
 });
 
-/** Record a membership (the sale itself is billed manually in Swipe, as before). */
+/** Sell a membership: bill it in Swipe, take the payment, and record it here. */
 export async function POST(req: Request) {
   if (!(await isOpsAuthed())) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -100,8 +115,33 @@ export async function POST(req: Request) {
     };
   }
 
+  const billsHere = input.saleMode === "bill";
+  const chargeInr = billsHere ? (input.priceInr ?? plan.priceInr ?? 0) : plan.priceInr;
+  const saleProduct = getSaleProductFor({
+    planKey: plan.planKey,
+    punchProductId: plan.punchProductId,
+  });
+  if (billsHere && !saleProduct) {
+    return NextResponse.json(
+      { error: "This plan has no Swipe sale product to bill against" },
+      { status: 400 }
+    );
+  }
+
+  if (billsHere && (chargeInr ?? 0) > 0 && !input.paymentMethod) {
+    return NextResponse.json({ error: "Pick how the payment was taken" }, { status: 400 });
+  }
+
+  if (input.createdOn && input.createdOn > todayIST()) {
+    return NextResponse.json({ error: "Created date can't be in the future" }, { status: 400 });
+  }
+
   const startsOn = input.startsOn ?? todayIST();
   const expiresOn = addMonths(startsOn, plan.validityMonths);
+  const kidNames = input.kidNames
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 
   try {
     // Advisory duplicate check (same pattern as the school log): warn when this
@@ -117,21 +157,136 @@ export async function POST(req: Request) {
       }
     }
 
-    const membership = await createMembership({
-      phone: input.phone,
-      customerName: input.customerName,
-      kidNames: input.kidNames,
-      ...plan,
-      punchTaxRatePercent: getPunchProduct(plan.punchProductId)?.taxRatePercent ?? 18,
-      saleInvoiceNumber: input.saleInvoiceNumber,
-      startsOn,
-      expiresOn,
-      notes: input.notes,
-    });
+    let saleInvoiceNumber = input.saleInvoiceNumber;
+    let saleInvoiceId: string | null = null;
+    let paymentWarning: string | null = null;
+
+    if (billsHere) {
+      const terms = [
+        plan.totalPlays == null ? "Unlimited plays" : `${plan.totalPlays} plays`,
+        `${plan.hoursPerPlay} hrs per play`,
+        `valid till ${expiresOn}`,
+      ].join(" · ");
+
+      let sale;
+      try {
+        sale = await billing.createMembershipSale({
+          customer: { name: input.customerName, phone: input.phone, kidNames },
+          plan: {
+            sku: String(saleProduct!.id),
+            name: plan.planName,
+            taxRatePercent: saleProduct!.taxRatePercent,
+            priceWithTax: chargeInr ?? 0,
+            totalPlays: plan.totalPlays,
+            hoursPerPlay: plan.hoursPerPlay,
+            validityMonths: plan.validityMonths,
+          },
+          notes: [`${plan.planName} — ${terms}`, kidNames.length ? `Kids: ${kidNames.join(", ")}` : ""]
+            .filter(Boolean)
+            .join(" · "),
+        });
+      } catch (err) {
+        console.error("membership sale invoice failed:", err);
+        return NextResponse.json(
+          { error: "Couldn't bill the membership in Swipe — nothing was saved. Please try again." },
+          { status: 502 }
+        );
+      }
+      saleInvoiceNumber = sale.invoiceNumber;
+
+      if (input.paymentMethod && (chargeInr ?? 0) > 0) {
+        try {
+          await billing.recordPayment({
+            ref: sale.ref,
+            amount: chargeInr!,
+            method: input.paymentMethod,
+            transactionRef: input.transactionRef || undefined,
+          });
+        } catch (err) {
+          console.error("membership sale payment failed:", err);
+          paymentWarning = `${saleInvoiceNumber} was billed but the ${input.paymentMethod} payment didn't record — collect it on the ops board.`;
+        }
+      }
+
+      if (dbConfigured()) {
+        const mirror = await recordInvoice({
+          number: saleInvoiceNumber,
+          source: "membership_sale",
+          customer: {
+            phone: input.phone,
+            name: input.customerName,
+            kidNames: input.kidNames,
+            swipeRef: sale.customerRef ?? null,
+          },
+          swipeRef: sale.docRef ?? null,
+          grossInr: chargeInr ?? 0,
+          discountInr: 0,
+          netInr: chargeInr ?? 0,
+          lines: [
+            {
+              sku: String(saleProduct!.id),
+              name: plan.planName,
+              kind: "membership_plan",
+              itemType: "Service",
+              quantity: 1,
+              unitPriceInr: chargeInr ?? 0,
+              taxRatePercent: saleProduct!.taxRatePercent,
+              totalInr: chargeInr ?? 0,
+              listPriceInr: getPlan(plan.planKey)?.priceWithTax ?? null,
+            },
+          ],
+          metadata: { plan_key: plan.planKey, plan_name: plan.planName },
+        }).catch((err) => {
+          console.error("membership sale mirror failed:", err);
+          return null;
+        });
+        saleInvoiceId = mirror?.invoiceId ?? null;
+
+        if (mirror && input.paymentMethod && !paymentWarning && (chargeInr ?? 0) > 0) {
+          await recordPaymentMirror({
+            invoiceId: mirror.invoiceId,
+            amountInr: chargeInr!,
+            method: input.paymentMethod,
+            transactionRef: input.transactionRef || undefined,
+            amountDueAfter: 0,
+          }).catch((err) => console.error("membership sale payment mirror failed:", err));
+        }
+      }
+    }
+
+    let membership;
+    try {
+      membership = await createMembership({
+        phone: input.phone,
+        customerName: input.customerName,
+        kidNames: input.kidNames,
+        ...plan,
+        priceInr: chargeInr,
+        punchTaxRatePercent: getPunchProduct(plan.punchProductId)?.taxRatePercent ?? 18,
+        saleInvoiceNumber,
+        saleInvoiceId,
+        startsOn,
+        expiresOn,
+        createdOn: input.createdOn ?? null,
+        notes: input.notes,
+      });
+    } catch (err) {
+      console.error("membership create failed:", err);
+      return NextResponse.json(
+        {
+          error: billsHere
+            ? `${saleInvoiceNumber} was billed in Swipe, but saving the membership failed. Record it with "Already billed in Swipe" and that number.`
+            : "Couldn't save the membership — please try again",
+          saleInvoiceNumber: billsHere ? saleInvoiceNumber : undefined,
+        },
+        { status: 502 }
+      );
+    }
 
     await mirrorMembership(membership); // best-effort, never throws
+    if (billsHere) await bumpBoard();
 
-    return NextResponse.json({ membership });
+    return NextResponse.json({ membership, saleInvoiceNumber, warning: paymentWarning });
   } catch (err) {
     console.error("membership create failed:", err);
     return NextResponse.json({ error: "Couldn't save the membership — please try again" }, { status: 502 });

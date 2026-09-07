@@ -21,8 +21,13 @@ export interface Membership {
   hoursPerPlay: number;
   kidsPerPlay: number;
   priceInr: number | null;
-  /** The manually-billed Swipe sale invoice, if the manager noted it. */
+  /** The Swipe sale invoice this membership was bought on. */
   saleInvoiceNumber: string;
+  /**
+   * Still to collect on that sale, ₹. Only known for sales THIS app billed —
+   * null for one billed in Swipe by hand, whose payments we never see.
+   */
+  saleDueInr: number | null;
   weekdaysOnly: boolean;
   oncePerDay: boolean;
   startsOn: string; // YYYY-MM-DD (IST)
@@ -63,6 +68,17 @@ export function membershipStatus(m: Membership, todayIST: string): MembershipSta
   const left = playsLeft(m);
   if (left !== null && left <= 0) return "exhausted";
   return "active";
+}
+
+/**
+ * "₹X to collect" when the sale this app billed is still owed, else null.
+ * A deleted membership is inert, so it stops asking.
+ */
+export function saleDueLabel(m: Membership): string | null {
+  if (m.deletedAt != null) return null;
+  return m.saleDueInr != null && m.saleDueInr > 0
+    ? `₹${m.saleDueInr.toLocaleString("en-IN")} to collect`
+    : null;
 }
 
 /** Plays one visit consumes: each play covers `kidsPerPlay` kids. */
