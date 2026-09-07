@@ -3,7 +3,7 @@ import Link from "next/link";
 import { isOpsAuthed } from "@/lib/ops/auth";
 import { todayIST } from "@/lib/ops/state";
 import { listAllMemberships, membersDbConfigured } from "@/lib/members/db";
-import { membershipStatus, playsLeft, type Membership, type MembershipStatus } from "@/lib/members/types";
+import { membershipStatus, playsLeft, saleDueLabel, type Membership, type MembershipStatus } from "@/lib/members/types";
 import OpsLoginGate from "@/components/ops/OpsLoginGate";
 import OpsNav from "@/components/ops/OpsNav";
 import MembersTabs from "@/components/members/MembersTabs";
@@ -23,6 +23,14 @@ const prettyDate = (d: string) =>
     timeZone: "Asia/Kolkata",
   });
 
+const prettyDateTime = (ms: number) =>
+  new Date(ms).toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "Asia/Kolkata",
+  });
+
 const STATUS_STYLE: Record<MembershipStatus, { label: string; className: string }> = {
   active: { label: "Active", className: "bg-green/15 text-green" },
   expired: { label: "Expired", className: "bg-coral/15 text-coral" },
@@ -36,8 +44,13 @@ const playsLabel = (m: Membership) => {
 };
 
 /** The full membership ledger — every member, plays left, expiry. CSV export. */
-export default async function MembersListPage() {
+export default async function MembersListPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ show?: string }>;
+}) {
   if (!(await isOpsAuthed())) return <OpsLoginGate />;
+  const showDeleted = (await searchParams).show === "deleted";
 
   let memberships: Membership[] = [];
   let loadError: string | null = null;
@@ -53,9 +66,11 @@ export default async function MembersListPage() {
   }
 
   const today = todayIST();
-  const rows = memberships.map((m) => ({ ...m, status: membershipStatus(m, today) }));
+  const all = memberships.map((m) => ({ ...m, status: membershipStatus(m, today) }));
+  const deletedCount = all.filter((m) => m.status === "deleted").length;
+  const liveCount = all.length - deletedCount;
+  const rows = all.filter((m) => (m.status === "deleted") === showDeleted);
   const activeCount = rows.filter((m) => m.status === "active").length;
-  const deletedCount = rows.filter((m) => m.status === "deleted").length;
 
   return (
     <>
@@ -65,7 +80,9 @@ export default async function MembersListPage() {
         <header className="text-center">
           <h1 className="sr-only">All members</h1>
           <p className="text-sm font-bold text-ink/60">
-            Every membership, newest first · plays left &amp; expiry
+            {showDeleted
+              ? "Deleted memberships, newest first · kept for the record"
+              : "Every membership, newest first · plays left & expiry"}
           </p>
         </header>
 
@@ -73,17 +90,41 @@ export default async function MembersListPage() {
           <MembersTabs />
         </div>
 
+        {deletedCount > 0 && (
+          <div className="mt-4 flex items-center justify-center gap-2">
+            <Link
+              href="/members/list"
+              className={`rounded-full px-4 py-1.5 text-sm font-black transition-colors ${
+                showDeleted ? "bg-cream text-ink/60 hover:bg-ink/10" : "bg-ink text-cream"
+              }`}
+            >
+              Members
+            </Link>
+            <Link
+              href="/members/list?show=deleted"
+              className={`rounded-full px-4 py-1.5 text-sm font-black transition-colors ${
+                showDeleted ? "bg-ink text-cream" : "bg-cream text-ink/60 hover:bg-ink/10"
+              }`}
+            >
+              Deleted ({deletedCount})
+            </Link>
+          </div>
+        )}
+
         <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-          <span className="rounded-full bg-teal px-3 py-1 text-sm font-black text-cream">
-            {rows.length - deletedCount} member{rows.length - deletedCount === 1 ? "" : "s"}
-          </span>
-          <span className="rounded-full bg-green/15 px-3 py-1 text-sm font-black text-green">
-            {activeCount} active
-          </span>
-          {deletedCount > 0 && (
+          {showDeleted ? (
             <span className="rounded-full bg-ink/10 px-3 py-1 text-sm font-black text-ink/50">
               {deletedCount} deleted
             </span>
+          ) : (
+            <>
+              <span className="rounded-full bg-teal px-3 py-1 text-sm font-black text-cream">
+                {liveCount} member{liveCount === 1 ? "" : "s"}
+              </span>
+              <span className="rounded-full bg-green/15 px-3 py-1 text-sm font-black text-green">
+                {activeCount} active
+              </span>
+            </>
           )}
         </div>
 
@@ -91,7 +132,9 @@ export default async function MembersListPage() {
           <p className="mt-8 text-center text-sm font-bold text-coral">{loadError}</p>
         ) : rows.length === 0 ? (
           <p className="mt-8 text-center text-sm font-bold text-ink/40">
-            No memberships recorded yet — add the first one from the counter.
+            {showDeleted
+              ? "Nothing deleted yet."
+              : "No memberships recorded yet — add the first one from the counter."}
           </p>
         ) : (
           <>
@@ -107,6 +150,7 @@ export default async function MembersListPage() {
                     <th className="px-5 py-3">Plays left</th>
                     <th className="px-5 py-3">Expires</th>
                     <th className="px-5 py-3">Sale invoice</th>
+                    <th className="px-5 py-3">Added</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-ink/5">
@@ -121,6 +165,11 @@ export default async function MembersListPage() {
                           </span>
                           {m.kidNames && (
                             <span className="block text-xs font-bold text-ink/45">{m.kidNames}</span>
+                          )}
+                          {m.status === "deleted" && m.deletedReason && (
+                            <span className="block text-xs font-bold text-ink/40">
+                              Deleted — {m.deletedReason}
+                            </span>
                           )}
                         </Link>
                       </td>
@@ -143,6 +192,14 @@ export default async function MembersListPage() {
                       </td>
                       <td className="whitespace-nowrap px-5 py-3 text-sm font-bold text-ink/45">
                         {m.saleInvoiceNumber || "—"}
+                        {saleDueLabel(m) && (
+                          <span className="ml-2 rounded-full bg-coral/15 px-2 py-0.5 text-xs font-black text-coral">
+                            {saleDueLabel(m)}
+                          </span>
+                        )}
+                      </td>
+                      <td className="whitespace-nowrap px-5 py-3 text-sm font-bold tabular-nums text-ink/45">
+                        {prettyDateTime(m.createdAt)}
                       </td>
                     </tr>
                   ))}
@@ -181,8 +238,16 @@ export default async function MembersListPage() {
                     <span className="rounded-full bg-cream px-2.5 py-1">
                       {m.status === "expired" ? "Expired" : "Expires"} {prettyDate(m.expiresOn)}
                     </span>
+                    <span className="rounded-full bg-cream px-2.5 py-1">
+                      Added {prettyDateTime(m.createdAt)}
+                    </span>
                     {m.saleInvoiceNumber && (
                       <span className="rounded-full bg-cream px-2.5 py-1">{m.saleInvoiceNumber}</span>
+                    )}
+                    {saleDueLabel(m) && (
+                      <span className="rounded-full bg-coral/15 px-2.5 py-1 text-coral">
+                        {saleDueLabel(m)}
+                      </span>
                     )}
                   </div>
                   {m.status === "deleted" && m.deletedReason && (

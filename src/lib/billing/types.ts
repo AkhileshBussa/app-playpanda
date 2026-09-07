@@ -102,6 +102,21 @@ export interface MembershipPunchInput {
   notes?: string;
 }
 
+/** One membership SALE to bill: the plan the family just bought. */
+export interface MembershipSaleInput {
+  customer: BookingCustomer;
+  plan: {
+    sku: string;
+    name: string;
+    taxRatePercent: number;
+    priceWithTax: number;
+    totalPlays: number | null;
+    hoursPerPlay: number;
+    validityMonths: number;
+  };
+  notes?: string;
+}
+
 /** Payment methods the counter can collect in. */
 export const PAYMENT_METHODS = ["Cash", "Card", "UPI"] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
@@ -476,6 +491,9 @@ export interface BillingProvider {
   createMembershipPunch(
     input: MembershipPunchInput
   ): Promise<{ invoiceNumber: string; docRef?: string; customerRef?: string | null }>;
+
+  /** Bill one membership sale; pay it with recordPayment(ref). */
+  createMembershipSale(input: MembershipSaleInput): Promise<Booking>;
 
   /**
    * Today's invoices carrying a membership-plan (sale) line, newest first —

@@ -1,10 +1,10 @@
 /**
  * Membership plan catalog — the single source of truth for the fixed plan set.
  *
- * The membership SALE stays a manual step in Swipe (the manager bills the
- * membership product at the counter, unchanged). This app records the
- * membership and its visits, and punches each visit as a ₹0 invoice with the
- * plan's PUNCH product, so the ops monitor and Swipe history line up.
+ * This app is where a membership is SOLD: recording it bills the plan's SALE
+ * product as an invoice in Swipe (and takes the payment), then punches each
+ * visit as a ₹0 invoice with the plan's PUNCH product, so the ops monitor and
+ * Swipe history line up.
  *
  * Product ids mirror the Swipe catalog (company 2430519), same convention as
  * PACKAGES in ../pricing.ts. Plays/hours/validity were read off each product's
@@ -14,8 +14,9 @@
 export interface MembershipPlan {
   key: string;
   name: string;
-  /** Swipe product billed manually at purchase (informational only here). */
+  /** Swipe product this app bills the purchase on. */
   saleProductId: number;
+  saleProductName: string;
   /** Swipe punch product used for each visit's ₹0 invoice. */
   punchProductId: number;
   punchProductName: string;
@@ -25,7 +26,7 @@ export interface MembershipPlan {
   /** Kids covered by one play; extra kids consume extra plays. */
   kidsPerPlay: number;
   validityMonths: number;
-  /** Tax-inclusive price, INR — informational, the sale is billed in Swipe. */
+  /** Tax-inclusive catalogue price, INR — what the sale invoice bills by default. */
   priceWithTax: number;
   taxRatePercent: number;
   weekdaysOnly: boolean;
@@ -38,6 +39,7 @@ export const MEMBERSHIP_PLANS: MembershipPlan[] = [
     key: "fun-five",
     name: "Fun Five Pass",
     saleProductId: 6,
+    saleProductName: "Fun Five Pass",
     punchProductId: 160,
     punchProductName: "Fun Five Pass - Punch",
     totalPlays: 5,
@@ -54,6 +56,7 @@ export const MEMBERSHIP_PLANS: MembershipPlan[] = [
     key: "fun-ten",
     name: "Fun Ten Pass",
     saleProductId: 199,
+    saleProductName: "Fun Ten Pass",
     punchProductId: 200,
     punchProductName: "Fun Ten Pass - 1hr - Punch",
     totalPlays: 10,
@@ -72,6 +75,7 @@ export const MEMBERSHIP_PLANS: MembershipPlan[] = [
     key: "pro-12",
     name: "Panda Pro 12",
     saleProductId: 7,
+    saleProductName: "Panda Pro 12",
     punchProductId: 162,
     punchProductName: "Panda Pro 12 - Punch",
     totalPlays: 12,
@@ -88,6 +92,7 @@ export const MEMBERSHIP_PLANS: MembershipPlan[] = [
     key: "max-25",
     name: "Panda Max 25",
     saleProductId: 8,
+    saleProductName: "Panda Max 25",
     punchProductId: 161,
     punchProductName: "Panda Max 25 - Punch",
     totalPlays: 25,
@@ -104,6 +109,7 @@ export const MEMBERSHIP_PLANS: MembershipPlan[] = [
     key: "supervised",
     name: "Supervised Play Pass",
     saleProductId: 9,
+    saleProductName: "Supervised Play Pass",
     punchProductId: 163,
     punchProductName: "Supervised Play Pass - Punch",
     totalPlays: null,
@@ -118,11 +124,18 @@ export const MEMBERSHIP_PLANS: MembershipPlan[] = [
   },
 ];
 
-/** Custom plans must still punch against one of these existing Swipe products. */
+/**
+ * Custom plans must still bill and punch against one of these existing Swipe
+ * products — a custom plan has no catalogue entry of its own, so it borrows a
+ * fixed plan's pair: the sale product carries its price, the punch product its
+ * visits. Both keep the membership categories Swipe reports on.
+ */
 export const PUNCH_PRODUCTS = MEMBERSHIP_PLANS.map((p) => ({
   id: p.punchProductId,
   name: p.punchProductName,
   taxRatePercent: p.taxRatePercent,
+  saleProductId: p.saleProductId,
+  saleProductName: p.saleProductName,
 }));
 
 export function getPlan(key: string): MembershipPlan | null {
@@ -131,6 +144,24 @@ export function getPlan(key: string): MembershipPlan | null {
 
 export function getPunchProduct(id: number) {
   return PUNCH_PRODUCTS.find((p) => p.id === id) ?? null;
+}
+
+export function getSaleProductFor(plan: {
+  planKey: string;
+  punchProductId: number;
+}): { id: number; name: string; taxRatePercent: number } | null {
+  const fixed = getPlan(plan.planKey);
+  if (fixed) {
+    return {
+      id: fixed.saleProductId,
+      name: fixed.saleProductName,
+      taxRatePercent: fixed.taxRatePercent,
+    };
+  }
+  const punch = getPunchProduct(plan.punchProductId);
+  return punch
+    ? { id: punch.saleProductId, name: punch.saleProductName, taxRatePercent: punch.taxRatePercent }
+    : null;
 }
 
 /**

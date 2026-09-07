@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import type { Membership, MembershipStatus, MembershipVisit } from "@/lib/members/types";
-import { normalizePhone } from "@/lib/members/types";
+import { normalizePhone, saleDueLabel } from "@/lib/members/types";
 import MembersTabs from "./MembersTabs";
 import RecordVisitSheet from "./RecordVisitSheet";
 
@@ -43,6 +43,7 @@ export default function MembersApp() {
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [result, setResult] = useState<LookupResult | null>(null);
   const [visitFor, setVisitFor] = useState<ApiMembership | null>(null);
   const searchRef = useRef<((p: string) => void) | null>(null);
@@ -94,7 +95,14 @@ export default function MembersApp() {
     const p = normalizePhone(params.get("phone") ?? "");
     if (!/^\d{10}$/.test(p)) return;
     setPhone(p);
-    if (params.get("created")) setNotice("Membership saved — ready to punch a visit.");
+    if (params.get("created")) {
+      const invoice = params.get("invoice");
+      setNotice(
+        `Membership saved${invoice ? ` · billed as ${invoice}` : ""} — ready to punch a visit.`
+      );
+    }
+    const warning = params.get("warning");
+    if (warning) setWarning(warning);
     searchRef.current?.(p);
     // Drop the params so a refresh doesn't replay the "saved" notice.
     window.history.replaceState({}, "", "/members");
@@ -155,6 +163,11 @@ export default function MembersApp() {
           </button>
         </div>
         {error && <p className="mt-2 px-1 text-sm font-bold text-coral">{error}</p>}
+        {warning && (
+          <p className="mt-2 rounded-2xl bg-yellow/25 px-3 py-2 text-sm font-bold text-ink/80">
+            {warning}
+          </p>
+        )}
         {notice && (
           <p className="mt-2 rounded-2xl bg-teal/15 px-3 py-2 text-sm font-bold text-ink/80">{notice}</p>
         )}
@@ -163,7 +176,13 @@ export default function MembersApp() {
       {/* Results */}
       {result && (
         <div className="mt-5 flex flex-col gap-4">
-          <div className="flex flex-wrap items-center gap-2">
+          {/* Lines up with whatever is below: the capped single column, or the
+              full-width grid several memberships tile into. */}
+          <div
+            className={`flex flex-wrap items-center gap-2 ${
+              result.memberships.length <= 1 ? "mx-auto w-full max-w-2xl" : ""
+            }`}
+          >
             <span className="rounded-full bg-teal px-3 py-1 text-sm font-black text-cream">
               {result.memberships.length} membership{result.memberships.length === 1 ? "" : "s"}
             </span>
@@ -257,6 +276,11 @@ export default function MembersApp() {
                   )}
                   {m.weekdaysOnly && (
                     <span className="rounded-full bg-yellow/25 px-2.5 py-1 text-brown">Mon–Fri only</span>
+                  )}
+                  {saleDueLabel(m) && (
+                    <span className="rounded-full bg-coral/15 px-2.5 py-1 text-coral">
+                      {saleDueLabel(m)}
+                    </span>
                   )}
                   <span
                     className={`rounded-full px-2.5 py-1 ${

@@ -39,6 +39,7 @@ function toMembership(r: any): Membership {
     kidsPerPlay: r.kids_per_play,
     priceInr: r.price_inr == null ? null : Number(r.price_inr),
     saleInvoiceNumber: r.sale_invoice_number ?? "",
+    saleDueInr: r.sale_due_inr == null ? null : Number(r.sale_due_inr),
     weekdaysOnly: r.weekdays_only,
     oncePerDay: r.once_per_day,
     startsOn: r.starts_on,
@@ -73,6 +74,8 @@ const MEMBERSHIP_SELECT = `
     c.phone, c.name AS customer_name,
     p.swipe_ref AS punch_swipe_ref, p.name AS punch_product_name,
     si.number AS sale_invoice_number,
+    CASE WHEN si.source = 'membership_sale' AND si.cancelled_at IS NULL
+      THEN GREATEST(si.net_inr - si.amount_paid_inr, 0) END AS sale_due_inr,
     COALESCE(v.used, 0) AS plays_used_total
   FROM memberships m
   JOIN customers c ON c.id = m.customer_id
@@ -111,12 +114,17 @@ export interface CreateMembershipInput {
   kidsPerPlay: number;
   priceInr: number | null;
   saleInvoiceNumber: string;
-  /** Details of the (hand-billed) sale invoice, when the caller looked them up. */
+  /** The sale's mirror row, when the caller billed it and already mirrored it. */
+  saleInvoiceId?: string | null;
+  /** Details of a sale invoice billed elsewhere, when the caller looked them up. */
   sale?: { totalInr: number | null; issuedAt: number | null } | null;
   weekdaysOnly: boolean;
   oncePerDay: boolean;
   startsOn: string;
   expiresOn: string;
+  /** IST day to record the membership under; defaults to now. Lets the counter
+   *  enter a sale from an earlier day without it landing under today. */
+  createdOn?: string | null;
   notes: string;
 }
 
@@ -137,10 +145,11 @@ export async function createMembership(input: CreateMembershipInput): Promise<Me
     taxRatePercent: input.punchTaxRatePercent ?? 18,
   });
 
-  // The sale is billed by hand in Swipe; give it a mirror row so the
-  // membership can reference it by id like everything else.
-  let saleInvoiceId: string | null = null;
-  if (input.saleInvoiceNumber) {
+  // The app bills the sale and mirrors it, so its id usually arrives with the
+  // input. A sale billed elsewhere (linked by number) gets a mirror row here so
+  // the membership can reference it by id like everything else.
+  let saleInvoiceId: string | null = input.saleInvoiceId ?? null;
+  if (!saleInvoiceId && input.saleInvoiceNumber) {
     saleInvoiceId = await findInvoiceIdByNumber(input.saleInvoiceNumber);
     if (!saleInvoiceId) {
       saleInvoiceId = await ensureExternalInvoice({
@@ -157,14 +166,15 @@ export async function createMembership(input: CreateMembershipInput): Promise<Me
     `INSERT INTO memberships (
        id, customer_id, product_id, sale_invoice_id, plan_key, plan_name,
        kid_names, total_plays, hours_per_play, kids_per_play, price_inr,
-       weekdays_only, once_per_day, starts_on, expires_on, notes
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::date,$15::date,$16)
+       weekdays_only, once_per_day, starts_on, expires_on, notes, created_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::date,$15::date,$16,
+       COALESCE(($17::date + time '12:00') AT TIME ZONE 'Asia/Kolkata', now()))
      RETURNING id`,
     [
       randomUUID(), customer.id, productId, saleInvoiceId, input.planKey,
       input.planName, input.kidNames, input.totalPlays, input.hoursPerPlay,
       input.kidsPerPlay, input.priceInr, input.weekdaysOnly, input.oncePerDay,
-      input.startsOn, input.expiresOn, input.notes,
+      input.startsOn, input.expiresOn, input.notes, input.createdOn ?? null,
     ]
   );
   const created = await getMembership(rows[0].id);

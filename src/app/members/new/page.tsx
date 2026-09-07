@@ -14,8 +14,8 @@ export const metadata: Metadata = {
 };
 
 /**
- * Record a membership the customer just bought. Independent of the counter —
- * no lookup needed first. `?phone=` prefills when arriving from a lookup.
+ * Sell a membership: bills it in Swipe and records it here. Independent of the
+ * counter — no lookup needed first. `?phone=` prefills when arriving from one.
  */
 export default async function NewMembershipPage({
   searchParams,
@@ -34,7 +34,7 @@ export default async function NewMembershipPage({
         <header className="text-center">
           <h1 className="sr-only">New membership</h1>
           <p className="text-sm font-bold text-ink/60">
-            Bill the sale in Swipe as usual — this records it for visit tracking
+            Saving bills the sale in Swipe and starts tracking the visits
           </p>
         </header>
 

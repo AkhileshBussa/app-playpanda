@@ -13,9 +13,8 @@ export const metadata: Metadata = {
 
 /**
  * Membership counter (staff only, same password as /ops): look up a member by
- * phone, see plays used/left, punch visits, and record new memberships. The
- * membership SALE is still billed manually in Swipe — this page records it and
- * handles everything after.
+ * phone, see plays used/left, punch visits, and sell new memberships — the
+ * sale itself is billed into Swipe from /members/new, not by hand.
  */
 export default async function MembersPage() {
   if (!(await isOpsAuthed())) return <OpsLoginGate />;

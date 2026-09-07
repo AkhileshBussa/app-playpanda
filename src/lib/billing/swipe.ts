@@ -31,6 +31,7 @@ import type {
   InvoiceLine,
   PaymentResult,
   MembershipPunchInput,
+  MembershipSaleInput,
   MembershipSaleInvoice,
   RecordPaymentInput,
   TodaySession,
@@ -678,6 +679,55 @@ async function createMembershipPunchInvoice(
     invoiceNumber: res.serial_number || initial.serialNumber,
     // createDocWithRetry already rejected a response without a doc id.
     docRef: String(res.new_hash_id || res.hash_id),
+  };
+}
+
+/** Membership purchase → the sale invoice, on the plan's sale product. */
+async function createMembershipSaleInvoice(
+  input: MembershipSaleInput,
+  partyId: number | null
+): Promise<{ invoiceNumber: string; docCount: number; hashId: string }> {
+  const line: InvoiceLine = {
+    sku: input.plan.sku,
+    name: input.plan.name,
+    itemType: "Service",
+    quantity: 1,
+    taxRatePercent: input.plan.taxRatePercent,
+    priceWithTax: input.plan.priceWithTax,
+  };
+  const base = toSwipeItem(line);
+  const item = {
+    ...base,
+    item_custom_columns: [
+      { id: ITEM_COL_HOURS.id, name: ITEM_COL_HOURS.name, value: String(input.plan.hoursPerPlay) },
+      {
+        id: ITEM_COL_PLAYS.id,
+        name: ITEM_COL_PLAYS.name,
+        value: input.plan.totalPlays == null ? "" : String(input.plan.totalPlays),
+      },
+    ],
+  };
+
+  const initial = await getNextInvoiceSerial();
+  const res = await createDocWithRetry(initial, (docNo, serial) =>
+    buildInvoiceDoc({
+      docNumber: docNo,
+      serialNumber: serial,
+      items: [item],
+      totalAmount: base.total_amount,
+      taxAmount: base.tax_amount,
+      netAmount: base.net_amount,
+      partyId,
+      notes: input.notes ?? "",
+      reference: "Play Panda membership",
+      documentCustomHeaders: [],
+    })
+  );
+  return {
+    invoiceNumber: res.serial_number || initial.serialNumber,
+    docCount: Number(res.doc_count ?? 0),
+    // createDocWithRetry already rejected a response without a doc id.
+    hashId: String(res.new_hash_id || res.hash_id),
   };
 }
 
@@ -1615,6 +1665,18 @@ export const swipeBilling: BillingProvider = {
 
     await deleteSwipeDoc(input.sessionId, input.remarks);
     return { cancelled: true, invoiceNumber: invoice.serialNumber };
+  },
+
+  async createMembershipSale(input: MembershipSaleInput): Promise<Booking> {
+    const partyId = await ensureCustomer(input.customer);
+    const { invoiceNumber, docCount, hashId } = await createMembershipSaleInvoice(input, partyId);
+    const ref: SwipeRef = { serialNumber: invoiceNumber, docCount, partyId, hashId };
+    return {
+      invoiceNumber,
+      ref: JSON.stringify(ref),
+      docRef: hashId,
+      customerRef: partyId != null ? String(partyId) : null,
+    };
   },
 
   async createMembershipPunch(

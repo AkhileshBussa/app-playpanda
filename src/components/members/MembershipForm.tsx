@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { normalizePhone } from "@/lib/members/types";
 import { addMonths, MEMBERSHIP_PLANS, PUNCH_PRODUCTS } from "@/lib/members/plans";
+import { PAYMENT_METHODS, type PaymentMethod } from "@/lib/billing/types";
 
 /** Today's membership sale invoices, as the pick-list API returns them. */
 interface SaleInvoiceOption {
@@ -44,11 +45,11 @@ const timeIST = (ms: number) =>
   });
 
 /**
- * Record a membership the customer just bought. Standalone — the manager does
- * NOT have to look anyone up first. The sale invoice is billed manually in
- * Swipe exactly as before; this form only records the membership so visits can
- * be tracked and punched. Custom plans set their own plays/hours but must map
- * to one of the existing Swipe punch products.
+ * Sell a membership. Standalone — the manager does NOT have to look anyone up
+ * first. Saving bills the sale in Swipe and takes the payment, then records the
+ * membership so visits can be punched against it. A sale billed in Swipe
+ * already can still be linked instead. Custom plans set their own plays/hours
+ * but bill and punch on an existing Swipe product.
  */
 export default function MembershipForm({ initialPhone = "" }: MembershipFormProps) {
   const router = useRouter();
@@ -56,8 +57,13 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
   const [customerName, setCustomerName] = useState("");
   const [kidNames, setKidNames] = useState("");
   const [planKey, setPlanKey] = useState<string>(MEMBERSHIP_PLANS[0].key);
+  const [saleMode, setSaleMode] = useState<"bill" | "link">("bill");
+  const [price, setPrice] = useState(String(MEMBERSHIP_PLANS[0].priceWithTax));
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(PAYMENT_METHODS[0]);
+  const [transactionRef, setTransactionRef] = useState("");
   const [saleInvoice, setSaleInvoice] = useState("");
   const [startsOn, setStartsOn] = useState(todayIST());
+  const [createdOn, setCreatedOn] = useState(todayIST());
   const [notes, setNotes] = useState("");
   // Custom plan fields
   const [customName, setCustomName] = useState("");
@@ -67,7 +73,6 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
   const [customHours, setCustomHours] = useState("2");
   const [customKidsPerPlay, setCustomKidsPerPlay] = useState("1");
   const [customValidity, setCustomValidity] = useState("6");
-  const [customPrice, setCustomPrice] = useState("");
   const [customWeekdaysOnly, setCustomWeekdaysOnly] = useState(false);
 
   const [saving, setSaving] = useState(false);
@@ -106,9 +111,10 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
     };
   }, [phone]);
 
-  // Load today's membership sales so the manager picks the invoice they just
-  // billed rather than typing its number.
+  // Only the "already billed in Swipe" path needs the pick-list, so it's
+  // fetched when that path is chosen rather than on every form open.
   useEffect(() => {
+    if (saleMode !== "link" || saleOptions !== null) return;
     let cancelled = false;
 
     (async () => {
@@ -136,7 +142,7 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [saleMode, saleOptions]);
 
   const isCustom = planKey === "custom";
   const fixedPlan = MEMBERSHIP_PLANS.find((p) => p.key === planKey);
@@ -162,9 +168,11 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
   const phoneMismatch =
     salePhone.length === 10 && normalizePhone(phone).length === 10 && salePhone !== normalizePhone(phone);
 
-  /** Switching plan can invalidate the picked invoice, so drop the selection. */
+  /** Switching plan re-prices the sale and can invalidate a picked invoice. */
   const selectPlan = (key: string) => {
     setPlanKey(key);
+    const plan = MEMBERSHIP_PLANS.find((p) => p.key === key);
+    setPrice(plan ? String(plan.priceWithTax) : "");
     if (!manualInvoice) setSaleInvoice("");
   };
 
@@ -181,13 +189,19 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
     setSaving(true);
     setError(null);
     try {
+      const priceInr = price.trim() === "" ? null : parseFloat(price);
       const body: Record<string, unknown> = {
         phone,
         customerName: customerName.trim(),
         kidNames: kidNames.trim(),
         planKey,
-        saleInvoiceNumber: saleInvoice.trim(),
+        saleMode,
+        priceInr,
+        paymentMethod: saleMode === "bill" ? paymentMethod : undefined,
+        transactionRef: transactionRef.trim(),
+        saleInvoiceNumber: saleMode === "link" ? saleInvoice.trim() : "",
         startsOn,
+        createdOn,
         notes: notes.trim(),
         force: forceArmed.current,
       };
@@ -199,7 +213,7 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
           hoursPerPlay: parseFloat(customHours) || 0,
           kidsPerPlay: parseInt(customKidsPerPlay) || 1,
           validityMonths: parseInt(customValidity) || 0,
-          priceInr: customPrice.trim() === "" ? null : parseFloat(customPrice),
+          priceInr,
           weekdaysOnly: customWeekdaysOnly,
           oncePerDay: customUnlimited, // unlimited passes are once-per-day by definition
         };
@@ -226,8 +240,12 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
         throw new Error(data.error || "Couldn't save — please try again");
       }
       // Hand the manager straight to the counter for this member, where the
-      // new membership is listed and ready to punch.
-      router.push(`/members?phone=${normalizePhone(phone)}&created=1`);
+      // new membership is listed and ready to punch. The invoice number rides
+      // along so the counter sees what was billed without opening Swipe.
+      const params = new URLSearchParams({ phone: normalizePhone(phone), created: "1" });
+      if (data.saleInvoiceNumber) params.set("invoice", data.saleInvoiceNumber);
+      if (data.warning) params.set("warning", data.warning);
+      router.push(`/members?${params.toString()}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't save — please try again");
       setSaving(false);
@@ -339,7 +357,8 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
                   ))}
                 </select>
                 <p className="mt-1 px-1 text-xs font-bold text-ink/40">
-                  Each visit creates a ₹0 invoice with this product, so Swipe stays in sync.
+                  The sale bills on this product&apos;s plan, and each visit creates a ₹0 invoice
+                  with it — so Swipe stays in sync.
                 </p>
               </div>
 
@@ -419,18 +438,6 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
                     required={isCustom}
                   />
                 </div>
-                <div>
-                  <label className={labelClass}>Price (₹)</label>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    min={0}
-                    value={customPrice}
-                    onChange={(e) => setCustomPrice(e.target.value)}
-                    placeholder="Optional"
-                    className={inputClass}
-                  />
-                </div>
               </div>
 
               <label className="flex items-center gap-2 px-1 text-sm font-bold text-ink/70">
@@ -446,8 +453,83 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
           )}
 
           <div>
-            <label className={labelClass}>Sale invoice</label>
-            {manualInvoice ? (
+            <label className={labelClass}>The sale</label>
+            <div className="flex gap-2">
+              {([
+                { mode: "bill", label: "Bill it now" },
+                { mode: "link", label: "Already billed" },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.mode}
+                  type="button"
+                  onClick={() => setSaleMode(opt.mode)}
+                  className={`flex h-11 flex-1 items-center justify-center whitespace-nowrap rounded-full text-sm font-black leading-none transition-colors ${
+                    saleMode === opt.mode
+                      ? "bg-ink text-cream"
+                      : "bg-cream text-ink/60 hover:bg-ink/10"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {saleMode === "bill" ? (
+              <div className="mt-3 space-y-3">
+                <div>
+                  <label className={labelClass}>Amount charged (₹) *</label>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    value={price}
+                    onChange={(e) => setPrice(e.target.value)}
+                    className={inputClass}
+                    required={saleMode === "bill"}
+                  />
+                  <p className="mt-1 px-1 text-xs font-bold text-ink/40">
+                    Saving raises this invoice in Swipe on the plan&apos;s product — no need to
+                    bill it there first.
+                  </p>
+                </div>
+
+                <div>
+                  <label className={labelClass}>Paid by</label>
+                  <div className="flex gap-2">
+                    {PAYMENT_METHODS.map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => {
+                          setPaymentMethod(m);
+                          if (m !== "Card") setTransactionRef("");
+                        }}
+                        className={`flex h-11 flex-1 items-center justify-center whitespace-nowrap rounded-full px-2 text-sm font-black leading-none transition-colors ${
+                          paymentMethod === m
+                            ? "bg-teal text-cream"
+                            : "bg-cream text-ink/60 hover:bg-ink/10"
+                        }`}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {paymentMethod === "Card" && (
+                  <div>
+                    <label className={labelClass}>Reference</label>
+                    <input
+                      type="text"
+                      value={transactionRef}
+                      onChange={(e) => setTransactionRef(e.target.value)}
+                      placeholder="Card ref (optional)"
+                      className={inputClass}
+                    />
+                  </div>
+                )}
+              </div>
+            ) : manualInvoice ? (
               <>
                 <input
                   type="text"
@@ -476,8 +558,8 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
                 {matchingSales.length === 0 ? (
                   <p className="rounded-2xl bg-cream px-3 py-2.5 text-sm font-bold text-ink/50">
                     No membership sale billed today
-                    {isCustom ? "" : ` for ${fixedPlan?.name}`} — bill it in Swipe first, or enter
-                    the number manually.
+                    {isCustom ? "" : ` for ${fixedPlan?.name}`} — switch to &ldquo;Bill it
+                    now&rdquo;, or enter the number manually.
                   </p>
                 ) : (
                   <div className="flex flex-col gap-2">
@@ -530,12 +612,12 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
                 </button>
               </>
             )}
-            {salesError && (
+            {saleMode === "link" && salesError && (
               <p className="mt-1 px-1 text-xs font-bold text-coral">
                 {salesError} — enter the number manually.
               </p>
             )}
-            {phoneMismatch && selectedSale && (
+            {saleMode === "link" && phoneMismatch && selectedSale && (
               <p className="mt-2 rounded-2xl bg-yellow/25 px-3 py-2 text-sm font-bold text-ink/80">
                 Heads up: {selectedSale.invoiceNumber} is billed to {selectedSale.phone}, not{" "}
                 {normalizePhone(phone)}. Check it&apos;s the right sale.
@@ -551,6 +633,21 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
               onChange={(e) => setStartsOn(e.target.value)}
               className={inputClass}
             />
+          </div>
+
+          <div>
+            <label className={labelClass}>Created on</label>
+            <input
+              type="date"
+              value={createdOn}
+              max={todayIST()}
+              onChange={(e) => setCreatedOn(e.target.value)}
+              className={inputClass}
+            />
+            <p className="mt-1 px-1 text-xs font-bold text-ink/40">
+              Which day this membership is recorded under — back-date it for a sale
+              taken earlier. The Swipe invoice is always dated today.
+            </p>
           </div>
 
           <div>

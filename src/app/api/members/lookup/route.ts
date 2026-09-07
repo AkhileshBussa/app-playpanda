@@ -21,8 +21,11 @@ const STATUS_RANK: Record<MembershipStatus, number> = {
 };
 
 /**
- * Counter lookup: all memberships (with visits + plays left) for a phone
- * number, plus the Swipe customer profile for prefilling a new membership.
+ * Counter lookup: the punchable memberships (with visits + plays left) for a
+ * phone number, plus the Swipe customer profile for prefilling a new one.
+ * Deleted memberships are left out — nothing can be punched against them, so
+ * on the counter they are only noise. They stay readable on the membership's
+ * own page and under the Deleted tab of /members/list.
  */
 export async function GET(req: Request) {
   if (!(await isOpsAuthed())) {
@@ -52,12 +55,14 @@ export async function GET(req: Request) {
 
     const today = todayIST();
     const detailed = await Promise.all(
-      memberships.map(async (m) => ({
-        ...m,
-        playsLeft: playsLeft(m),
-        status: membershipStatus(m, today),
-        visits: await listVisits(m.id),
-      }))
+      memberships
+        .filter((m) => m.deletedAt == null)
+        .map(async (m) => ({
+          ...m,
+          playsLeft: playsLeft(m),
+          status: membershipStatus(m, today),
+          visits: await listVisits(m.id),
+        }))
     );
 
     // Order for the counter, not for the archive: the membership that should

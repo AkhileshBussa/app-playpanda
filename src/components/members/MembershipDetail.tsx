@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useState } from "react";
 import type { Membership, MembershipStatus, MembershipVisit } from "@/lib/members/types";
-import { membershipStatus, playsLeft } from "@/lib/members/types";
+import { membershipStatus, playsLeft, saleDueLabel } from "@/lib/members/types";
 import DeleteReasonSheet from "./DeleteReasonSheet";
 import RecordVisitSheet from "./RecordVisitSheet";
 import type { ApiMembership } from "./MembersApp";
@@ -172,6 +172,11 @@ export default function MembershipDetail({ membership, visits, today }: Membersh
           {membership.saleInvoiceNumber && (
             <span className="rounded-full bg-cream px-2.5 py-1 text-ink/60">
               Sale {membership.saleInvoiceNumber}
+            </span>
+          )}
+          {saleDueLabel(membership) && (
+            <span className="rounded-full bg-coral/15 px-2.5 py-1 text-coral">
+              {saleDueLabel(membership)}
             </span>
           )}
         </div>
