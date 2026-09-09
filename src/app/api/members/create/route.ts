@@ -43,7 +43,7 @@ const createSchema = z.object({
   custom: customSchema.optional(),
   saleMode: z.enum(["bill", "link"]).default("bill"),
   priceInr: z.number().min(0).max(500000).nullable().default(null),
-  paymentMethod: z.enum(PAYMENT_METHODS).optional(),
+  paymentMethod: z.enum(PAYMENT_METHODS, { message: "Pick how it was paid" }),
   transactionRef: z.string().trim().max(60).default(""),
   saleInvoiceNumber: z.string().trim().max(30).default(""),
   startsOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid start date").optional(),
@@ -128,10 +128,6 @@ export async function POST(req: Request) {
     );
   }
 
-  if (billsHere && (chargeInr ?? 0) > 0 && !input.paymentMethod) {
-    return NextResponse.json({ error: "Pick how the payment was taken" }, { status: 400 });
-  }
-
   if (input.createdOn && input.createdOn > todayIST()) {
     return NextResponse.json({ error: "Created date can't be in the future" }, { status: 400 });
   }
@@ -203,7 +199,7 @@ export async function POST(req: Request) {
       }
       saleInvoiceNumber = sale.invoiceNumber;
 
-      if (input.paymentMethod && (chargeInr ?? 0) > 0) {
+      if ((chargeInr ?? 0) > 0) {
         try {
           await billing.recordPayment({
             ref: sale.ref,
@@ -251,7 +247,7 @@ export async function POST(req: Request) {
         });
         saleInvoiceId = mirror?.invoiceId ?? null;
 
-        if (mirror && input.paymentMethod && !paymentWarning && (chargeInr ?? 0) > 0) {
+        if (mirror && !paymentWarning && (chargeInr ?? 0) > 0) {
           await recordPaymentMirror({
             invoiceId: mirror.invoiceId,
             amountInr: chargeInr!,
@@ -274,6 +270,8 @@ export async function POST(req: Request) {
         punchTaxRatePercent: getPunchProduct(plan.punchProductId)?.taxRatePercent ?? 18,
         saleInvoiceNumber,
         saleInvoiceId,
+        paidBy: input.paymentMethod,
+        paidByRef: input.transactionRef,
         startsOn,
         expiresOn,
         createdOn: input.createdOn ?? null,

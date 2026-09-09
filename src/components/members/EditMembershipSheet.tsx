@@ -48,6 +48,9 @@ const chip = (on: boolean) =>
  * The plan and what it's worth are shown but not editable — the sale invoice
  * in Swipe already says what was sold, and an edit here must never contradict
  * it. "Paid by" corrects our ledger only, and says so.
+ *
+ * Paid by is required: every membership records how it was paid, whether or
+ * not anything was billed here.
  */
 export default function EditMembershipSheet({
   membership,
@@ -68,8 +71,6 @@ export default function EditMembershipSheet({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const canEditPaidBy = membership.salePaymentId != null;
-
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (saving) return;
@@ -85,8 +86,8 @@ export default function EditMembershipSheet({
           kidNames: kidNames.trim(),
           createdOn,
           notes: notes.trim(),
-          paidBy: canEditPaidBy ? paidBy : undefined,
-          paidByRef: canEditPaidBy ? paidByRef.trim() : "",
+          paidBy,
+          paidByRef: paidByRef.trim(),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -164,42 +165,36 @@ export default function EditMembershipSheet({
           </div>
 
           <div>
-            <label className={labelClass}>Paid by</label>
+            <label className={labelClass}>Paid by *</label>
             <div className="flex flex-wrap gap-1.5">
               {PAYMENT_METHODS.map((m) => (
                 <button
                   key={m}
                   type="button"
-                  disabled={!canEditPaidBy}
-                  onClick={() => setPaidBy(m)}
-                  className={`${chip(canEditPaidBy && paidBy === m)} disabled:opacity-40`}
+                  onClick={() => {
+                    setPaidBy(m);
+                    if (m !== "Card") setPaidByRef("");
+                  }}
+                  className={chip(paidBy === m)}
                 >
                   {m}
                 </button>
               ))}
             </div>
-            {canEditPaidBy ? (
-              <>
-                {paidBy === "Card" && (
-                  <input
-                    type="text"
-                    value={paidByRef}
-                    onChange={(e) => setPaidByRef(e.target.value)}
-                    placeholder="Card reference (optional)"
-                    className={`${inputClass} mt-2`}
-                  />
-                )}
-                <p className="mt-1 px-1 text-xs font-bold text-ink/40">
-                  Corrects our ledger only — Swipe keeps the method it recorded.
-                </p>
-              </>
-            ) : (
-              <p className="mt-1 px-1 text-xs font-bold text-ink/40">
-                {membership.salePaymentCount > 1
-                  ? "More than one payment is recorded against this sale — fix it on the invoice."
-                  : "No payment of ours is recorded against this sale, so there's nothing to correct here."}
-              </p>
+            {paidBy === "Card" && (
+              <input
+                type="text"
+                value={paidByRef}
+                onChange={(e) => setPaidByRef(e.target.value)}
+                placeholder="Card reference (optional)"
+                className={`${inputClass} mt-2`}
+              />
             )}
+            <p className="mt-1 px-1 text-xs font-bold text-ink/40">
+              {membership.salePaymentId
+                ? "Corrects our ledger — Swipe keeps the method it recorded."
+                : "Recorded on the membership. Nothing of ours is billed against this sale to correct."}
+            </p>
           </div>
 
           <div>

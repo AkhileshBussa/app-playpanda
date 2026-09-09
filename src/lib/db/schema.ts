@@ -182,6 +182,8 @@ export const ensureSchema = onceSchema(`
   CREATE INDEX IF NOT EXISTS memberships_customer_idx ON memberships (customer_id);
   CREATE INDEX IF NOT EXISTS memberships_starts_idx ON memberships (starts_on);
   CREATE INDEX IF NOT EXISTS memberships_expires_idx ON memberships (expires_on);
+  ALTER TABLE memberships ADD COLUMN IF NOT EXISTS paid_by TEXT NOT NULL DEFAULT '';
+  ALTER TABLE memberships ADD COLUMN IF NOT EXISTS paid_by_ref TEXT NOT NULL DEFAULT '';
 
   CREATE TABLE IF NOT EXISTS membership_visits (
     id TEXT PRIMARY KEY,

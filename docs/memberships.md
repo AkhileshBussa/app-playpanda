@@ -14,7 +14,10 @@ first — saving the form is what raises the invoice.
    but bill and punch on an existing Swipe product). The amount is prefilled
    from the plan and can be edited, and the payment is taken in the same step
    (Cash / Card / UPI — a sale billed from here is always collected, so there
-   is no "pay later" option; only Card offers a reference field). **Created
+   is no "pay later" option; only Card offers a reference field). **Paid by is
+   required on both paths**: every membership records how it was paid, even
+   one this app never billed, so the answer is never missing from the ledger.
+   **Created
    on** defaults to today and can be back-dated for a sale taken on an earlier
    day — it moves the membership's place in the ledger, not the Swipe invoice,
    which is always dated today. There is no separate start date: a membership
@@ -43,6 +46,12 @@ invoiced there). It picks from a list of today's Swipe membership sales — a
 fixed plan shows only invoices carrying that plan's product, a custom plan
 shows all of them — and typing the number stays available for older sales or
 when Swipe is unreachable. Nothing is billed or collected in this mode.
+
+**The invoice number is optional here.** A membership entered from an older
+book, or one with no invoice to point at, is saved without it — which is why
+some rows have no sale invoice and no payment of ours behind them. **Paid by
+is still required**, and lands on the membership itself (`memberships.paid_by`)
+rather than on a payment row, so how it was paid is recorded either way.
 
 ### When something half-lands
 
@@ -147,10 +156,11 @@ and the notes. Nothing else.
 - **Created on is the start date** — a membership starts the day it's recorded,
   so one date drives both. Expiry is left as sold: back-dating a record must
   not quietly change when the customer's pass dies. It can't be in the future.
-- **Paid by corrects our ledger only** — Swipe keeps the method it recorded,
-  and the reply says so. Offered only when exactly one of our payments is
-  mirrored against the sale; a part-paid or hand-billed sale has nothing here
-  to correct.
+- **Paid by is always editable**, because it lives on the membership. When the
+  sale also has exactly one of our payments mirrored against it, that row is
+  corrected to match so the ledger doesn't hold two answers; Swipe keeps the
+  method it recorded, and the reply says so. A sale with several payments is
+  left alone and the reply says that too.
 - A deleted membership can't be edited.
 - Every edit appends what changed to an **Edits** tab in the Google Sheet, for
   the same reason deletions get their own tab: the history tabs are

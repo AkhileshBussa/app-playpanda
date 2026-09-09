@@ -204,7 +204,7 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
         planKey,
         saleMode,
         priceInr,
-        paymentMethod: saleMode === "bill" ? paymentMethod : undefined,
+        paymentMethod,
         transactionRef: transactionRef.trim(),
         saleInvoiceNumber: saleMode === "link" ? saleInvoice.trim() : "",
         createdOn,
@@ -502,41 +502,6 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
                   </p>
                 </div>
 
-                <div>
-                  <label className={labelClass}>Paid by</label>
-                  <div className="flex gap-2">
-                    {PAYMENT_METHODS.map((m) => (
-                      <button
-                        key={m}
-                        type="button"
-                        onClick={() => {
-                          setPaymentMethod(m);
-                          if (m !== "Card") setTransactionRef("");
-                        }}
-                        className={`flex h-11 flex-1 items-center justify-center whitespace-nowrap rounded-full px-2 text-sm font-black leading-none transition-colors ${
-                          paymentMethod === m
-                            ? "bg-teal text-cream"
-                            : "bg-cream text-ink/60 hover:bg-ink/10"
-                        }`}
-                      >
-                        {m}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {paymentMethod === "Card" && (
-                  <div>
-                    <label className={labelClass}>Reference</label>
-                    <input
-                      type="text"
-                      value={transactionRef}
-                      onChange={(e) => setTransactionRef(e.target.value)}
-                      placeholder="Card ref (optional)"
-                      className={inputClass}
-                    />
-                  </div>
-                )}
               </div>
             ) : manualInvoice ? (
               <>
@@ -544,9 +509,12 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
                   type="text"
                   value={saleInvoice}
                   onChange={(e) => setSaleInvoice(e.target.value)}
-                  placeholder="e.g. INV-1665"
+                  placeholder="e.g. INV-1665 (optional)"
                   className={inputClass}
                 />
+                <p className="mt-1 px-1 text-xs font-bold text-ink/40">
+                  Optional — leave it blank for a sale with no invoice to point at.
+                </p>
                 {matchingSales.length > 0 && (
                   <button
                     type="button"
@@ -632,6 +600,43 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
                 {normalizePhone(phone)}. Check it&apos;s the right sale.
               </p>
             )}
+
+            <div className="mt-3">
+              <label className={labelClass}>Paid by *</label>
+              <div className="flex gap-2">
+                {PAYMENT_METHODS.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => {
+                      setPaymentMethod(m);
+                      if (m !== "Card") setTransactionRef("");
+                    }}
+                    className={`flex h-11 flex-1 items-center justify-center whitespace-nowrap rounded-full px-2 text-sm font-black leading-none transition-colors ${
+                      paymentMethod === m
+                        ? "bg-teal text-cream"
+                        : "bg-cream text-ink/60 hover:bg-ink/10"
+                    }`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+              {paymentMethod === "Card" && (
+                <input
+                  type="text"
+                  value={transactionRef}
+                  onChange={(e) => setTransactionRef(e.target.value)}
+                  placeholder="Card ref (optional)"
+                  className={`${inputClass} mt-2`}
+                />
+              )}
+              <p className="mt-1 px-1 text-xs font-bold text-ink/40">
+                {saleMode === "bill"
+                  ? "Collected against the invoice this raises."
+                  : "Recorded on the membership — nothing is collected here."}
+              </p>
+            </div>
           </div>
 
           <div>
