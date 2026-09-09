@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import type { Membership } from "@/lib/members/types";
-import { addMonths, getPlan, MEMBERSHIP_PLANS, PUNCH_PRODUCTS } from "@/lib/members/plans";
 import { PAYMENT_METHODS, type PaymentMethod } from "@/lib/billing/types";
 
 interface EditMembershipSheetProps {
@@ -32,18 +31,23 @@ const istDay = (ms: number) =>
     day: "2-digit",
   }).format(new Date(ms));
 
+const prettyDate = (d: string) =>
+  new Date(`${d}T12:00:00+05:30`).toLocaleDateString("en-IN", {
+    day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata",
+  });
+
 const chip = (on: boolean) =>
   `rounded-full px-4 py-2 text-sm font-black transition-all ${
     on ? "bg-coral text-cream shadow-btn" : "bg-white text-ink/60"
   }`;
 
 /**
- * Fix a membership after it was sold: the names on it, which plan it is, its
- * terms and dates, when it's recorded under, and how the sale was paid.
+ * Fix what was typed wrong on a membership: the parent's name, the kids, the
+ * day it's recorded under, how the sale was paid, the notes.
  *
- * Money stays out: the price and the Swipe sale invoice are exactly as billed.
- * "Paid by" is the one money-adjacent field, and it corrects our ledger only —
- * the sheet says so, and the server repeats it in the reply.
+ * The plan and what it's worth are shown but not editable — the sale invoice
+ * in Swipe already says what was sold, and an edit here must never contradict
+ * it. "Paid by" corrects our ledger only, and says so.
  */
 export default function EditMembershipSheet({
   membership,
@@ -52,16 +56,6 @@ export default function EditMembershipSheet({
 }: EditMembershipSheetProps) {
   const [customerName, setCustomerName] = useState(membership.customerName);
   const [kidNames, setKidNames] = useState(membership.kidNames);
-  const [planKey, setPlanKey] = useState(membership.planKey);
-  const [planName, setPlanName] = useState(membership.planName);
-  const [punchProductId, setPunchProductId] = useState(membership.punchProductId);
-  const [unlimited, setUnlimited] = useState(membership.totalPlays == null);
-  const [totalPlays, setTotalPlays] = useState(String(membership.totalPlays ?? ""));
-  const [hoursPerPlay, setHoursPerPlay] = useState(String(membership.hoursPerPlay));
-  const [kidsPerPlay, setKidsPerPlay] = useState(String(membership.kidsPerPlay));
-  const [weekdaysOnly, setWeekdaysOnly] = useState(membership.weekdaysOnly);
-  const [startsOn, setStartsOn] = useState(membership.startsOn);
-  const [expiresOn, setExpiresOn] = useState(membership.expiresOn);
   const [createdOn, setCreatedOn] = useState(istDay(membership.createdAt));
   const [paidBy, setPaidBy] = useState<PaymentMethod>(
     (PAYMENT_METHODS as readonly string[]).includes(membership.paidBy)
@@ -74,27 +68,7 @@ export default function EditMembershipSheet({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const isCustom = planKey === "custom";
   const canEditPaidBy = membership.salePaymentId != null;
-
-  const selectPlan = (key: string) => {
-    setPlanKey(key);
-    const plan = getPlan(key);
-    if (!plan) {
-      setPlanName(membership.planKey === "custom" ? membership.planName : "");
-      return;
-    }
-    setPlanName(plan.name);
-    setPunchProductId(plan.punchProductId);
-    setUnlimited(plan.totalPlays == null);
-    setTotalPlays(String(plan.totalPlays ?? ""));
-    setHoursPerPlay(String(plan.hoursPerPlay));
-    setKidsPerPlay(String(plan.kidsPerPlay));
-    setWeekdaysOnly(plan.weekdaysOnly);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(startsOn)) {
-      setExpiresOn(addMonths(startsOn, plan.validityMonths));
-    }
-  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -109,16 +83,6 @@ export default function EditMembershipSheet({
           membershipId: membership.id,
           customerName: customerName.trim(),
           kidNames: kidNames.trim(),
-          planKey,
-          planName: planName.trim(),
-          punchProductId,
-          totalPlays: unlimited ? null : parseInt(totalPlays) || 0,
-          hoursPerPlay: parseFloat(hoursPerPlay) || 0,
-          kidsPerPlay: parseInt(kidsPerPlay) || 1,
-          weekdaysOnly,
-          oncePerDay: unlimited,
-          startsOn,
-          expiresOn,
           createdOn,
           notes: notes.trim(),
           paidBy: canEditPaidBy ? paidBy : undefined,
@@ -157,7 +121,7 @@ export default function EditMembershipSheet({
           </button>
         </div>
         <p className="text-sm font-bold text-ink/60">
-          {membership.phone}
+          {membership.planName} · {membership.phone}
           {membership.saleInvoiceNumber && ` · sale ${membership.saleInvoiceNumber}`}
         </p>
 
@@ -185,136 +149,7 @@ export default function EditMembershipSheet({
           </div>
 
           <div>
-            <label className={labelClass}>Plan</label>
-            <div className="flex flex-wrap gap-1.5">
-              {MEMBERSHIP_PLANS.map((p) => (
-                <button
-                  key={p.key}
-                  type="button"
-                  onClick={() => selectPlan(p.key)}
-                  className={chip(planKey === p.key)}
-                >
-                  {p.name}
-                </button>
-              ))}
-              <button type="button" onClick={() => selectPlan("custom")} className={chip(isCustom)}>
-                Custom
-              </button>
-            </div>
-          </div>
-
-          {isCustom && (
-            <>
-              <div>
-                <label className={labelClass}>Custom plan name *</label>
-                <input
-                  type="text"
-                  value={planName}
-                  onChange={(e) => setPlanName(e.target.value)}
-                  placeholder="e.g. Summer Camp Pass"
-                  className={inputClass}
-                  required
-                />
-              </div>
-              <div>
-                <label className={labelClass}>Punches bill against</label>
-                <select
-                  value={punchProductId}
-                  onChange={(e) => setPunchProductId(Number(e.target.value))}
-                  className={inputClass}
-                >
-                  {PUNCH_PRODUCTS.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </>
-          )}
-
-          <div>
-            <label className={labelClass}>Plays</label>
-            <div className="flex gap-2">
-              <input
-                type="number"
-                min={1}
-                value={unlimited ? "" : totalPlays}
-                onChange={(e) => setTotalPlays(e.target.value)}
-                disabled={unlimited}
-                placeholder={unlimited ? "Unlimited" : "e.g. 10"}
-                className={`${inputClass} flex-1 disabled:opacity-50`}
-              />
-              <button
-                type="button"
-                onClick={() => setUnlimited((u) => !u)}
-                className={chip(unlimited)}
-              >
-                Unlimited
-              </button>
-            </div>
-            <p className="mt-1 px-1 text-xs font-bold text-ink/40">
-              {membership.playsUsed} play{membership.playsUsed === 1 ? "" : "s"} already punched —
-              the total can&apos;t go below that.
-            </p>
-          </div>
-
-          <div className="flex gap-2">
-            <div className="flex-1">
-              <label className={labelClass}>Hours/play</label>
-              <input
-                type="number"
-                step="0.5"
-                min={0.5}
-                value={hoursPerPlay}
-                onChange={(e) => setHoursPerPlay(e.target.value)}
-                className={inputClass}
-              />
-            </div>
-            <div className="flex-1">
-              <label className={labelClass}>Kids/play</label>
-              <input
-                type="number"
-                min={1}
-                value={kidsPerPlay}
-                onChange={(e) => setKidsPerPlay(e.target.value)}
-                className={inputClass}
-              />
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setWeekdaysOnly((w) => !w)}
-            className={chip(weekdaysOnly)}
-          >
-            Mon–Fri only
-          </button>
-
-          <div className="flex gap-2">
-            <div className="flex-1">
-              <label className={labelClass}>Starts on</label>
-              <input
-                type="date"
-                value={startsOn}
-                onChange={(e) => setStartsOn(e.target.value)}
-                className={inputClass}
-              />
-            </div>
-            <div className="flex-1">
-              <label className={labelClass}>Expires on</label>
-              <input
-                type="date"
-                value={expiresOn}
-                min={startsOn}
-                onChange={(e) => setExpiresOn(e.target.value)}
-                className={inputClass}
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className={labelClass}>Recorded on</label>
+            <label className={labelClass}>Created on</label>
             <input
               type="date"
               value={createdOn}
@@ -323,8 +158,8 @@ export default function EditMembershipSheet({
               className={inputClass}
             />
             <p className="mt-1 px-1 text-xs font-bold text-ink/40">
-              Which day this membership sits under in the ledger. The Swipe invoice keeps its
-              own date.
+              The day this membership sits under, and the day it starts. Expiry stays{" "}
+              {prettyDate(membership.expiresOn)} — as sold.
             </p>
           </div>
 
@@ -379,8 +214,8 @@ export default function EditMembershipSheet({
           </div>
 
           <p className="rounded-2xl bg-white px-3 py-2 text-xs font-bold text-ink/60">
-            The price and the Swipe sale invoice aren&apos;t touched. The phone number can&apos;t
-            change here — a membership on the wrong number is a delete and a fresh sale.
+            The plan, its plays and hours, the price and the Swipe invoice stay as sold. Wrong
+            plan or wrong number? Delete this one and sell it again.
           </p>
 
           {error && <p className="px-1 text-sm font-bold text-coral">{error}</p>}

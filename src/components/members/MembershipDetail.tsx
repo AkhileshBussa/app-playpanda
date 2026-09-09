@@ -316,14 +316,9 @@ export default function MembershipDetail({ membership, visits, today }: Membersh
         <EditMembershipSheet
           membership={membership}
           onClose={() => setEditing(false)}
-          onSaved={(saved, warning) => {
+          onSaved={(_saved, warning) => {
             setEditing(false);
-            setNotice(
-              `Membership updated.${warning ? ` ${warning}` : ""}` +
-                (saved.planName !== membership.planName
-                  ? " Future punches bill against the new plan's product."
-                  : "")
-            );
+            setNotice(`Membership updated.${warning ? ` ${warning}` : ""}`);
             router.refresh();
           }}
         />

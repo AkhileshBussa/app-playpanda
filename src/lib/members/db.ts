@@ -199,28 +199,24 @@ export interface UpdateMembershipInput {
   id: string;
   customerName: string;
   kidNames: string;
-  planKey: string;
-  planName: string;
-  punchProductId: number;
-  punchProductName: string;
-  punchTaxRatePercent?: number;
-  totalPlays: number | null;
-  hoursPerPlay: number;
-  kidsPerPlay: number;
-  weekdaysOnly: boolean;
-  oncePerDay: boolean;
-  startsOn: string;
-  expiresOn: string;
-  /** IST day the membership is recorded under; omit to leave it where it is. */
-  createdOn?: string | null;
+  /** IST day the membership is recorded under, and the day it starts. */
+  createdOn: string;
   notes: string;
 }
 
 /**
- * Rewrite a membership's terms in place. Money is deliberately absent: the
- * price and the sale invoice stand as billed, so an edit can never leave the
- * ledger disagreeing with Swipe. Phone is absent too — that keys the family,
- * and moving a membership to another number is a delete-and-resell.
+ * Correct what was typed wrong on a membership: the names on it, the day it
+ * sits under, its notes.
+ *
+ * Everything that decides what the membership IS stays put — plan, plays,
+ * hours, expiry, price, the sale invoice. Widening a plan after the fact
+ * would leave our record disagreeing with what Swipe billed, so that is a
+ * delete and a fresh sale. Phone is fixed too: it keys the family.
+ *
+ * The membership starts the day it's recorded, so one date drives both.
+ * Expiry is left exactly as sold — moving the record must not quietly change
+ * when the customer's pass dies.
+ *
  * Returns null when the membership is gone or already deleted.
  */
 export async function updateMembership(input: UpdateMembershipInput): Promise<Membership | null> {
@@ -233,31 +229,14 @@ export async function updateMembership(input: UpdateMembershipInput): Promise<Me
     name: input.customerName,
     kidNames: input.kidNames,
   });
-  const productId = await ensureProduct({
-    swipeRef: String(input.punchProductId),
-    name: input.punchProductName,
-    kind: "membership_punch",
-    itemType: "Service",
-    priceInr: null,
-    taxRatePercent: input.punchTaxRatePercent ?? 18,
-  });
 
   const { rowCount } = await getPool().query(
     `UPDATE memberships SET
-       product_id = $2, plan_key = $3, plan_name = $4, kid_names = $5,
-       total_plays = $6, hours_per_play = $7, kids_per_play = $8,
-       weekdays_only = $9, once_per_day = $10,
-       starts_on = $11::date, expires_on = $12::date, notes = $13,
-       created_at = COALESCE(
-         ($14::date + time '12:00') AT TIME ZONE 'Asia/Kolkata', created_at),
+       kid_names = $2, notes = $3, starts_on = $4::date,
+       created_at = ($4::date + time '12:00') AT TIME ZONE 'Asia/Kolkata',
        last_updated_at = now()
      WHERE id = $1 AND deleted_at IS NULL`,
-    [
-      input.id, productId, input.planKey, input.planName, input.kidNames,
-      input.totalPlays, input.hoursPerPlay, input.kidsPerPlay,
-      input.weekdaysOnly, input.oncePerDay, input.startsOn, input.expiresOn,
-      input.notes, input.createdOn ?? null,
-    ]
+    [input.id, input.kidNames, input.notes, input.createdOn]
   );
   if (!rowCount) return null;
   return getMembership(input.id);

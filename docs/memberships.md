@@ -134,26 +134,21 @@ lookup, creating does not.
 
 ## Editing
 
-**Edit** on a membership's own page fixes what was entered wrong, without
-touching money. Editable: the parent's name, kid names, which plan it is, the
-plan's terms (plays, hours/play, kids/play, Mon–Fri only), the start and
-expiry dates, the day it's **recorded on** in the ledger, how the sale was
-**paid by**, and the notes.
+**Edit** on a membership's own page fixes what was typed wrong: the parent's
+name, the kid names, the day it's **created on**, how the sale was **paid by**,
+and the notes. Nothing else.
 
-- **The price and the Swipe sale invoice are never touched.** An edit can
-  widen a plan or fix a name; it can't make our ledger disagree with Swipe
-  about what was charged. A genuinely wrong charge is a Swipe job.
+- **What was sold is not editable.** The plan, its plays and hours, the price
+  and the Swipe sale invoice stay exactly as billed — an edit here can never
+  make our record contradict Swipe. A wrong plan (or a wrong phone number,
+  which keys the family) is a delete and a fresh sale.
+- **Created on is the start date** — a membership starts the day it's recorded,
+  so one date drives both. Expiry is left as sold: back-dating a record must
+  not quietly change when the customer's pass dies. It can't be in the future.
 - **Paid by corrects our ledger only** — Swipe keeps the method it recorded,
-  and the reply says so. The field is offered only when exactly one of our
-  payments is mirrored against the sale; a part-paid or hand-billed sale has
-  nothing here to correct.
-- **The total can't drop below the plays already punched** — those are real
-  visits. Expiry can't precede the start date, and the recorded-on day can't
-  be in the future.
-- **The phone number is not editable.** It keys the family; a membership sold
-  on the wrong number is a delete and a fresh sale.
-- **Switching plan** repoints future punches at the new plan's Swipe punch
-  product. Punches already made keep the invoices they were billed on.
+  and the reply says so. Offered only when exactly one of our payments is
+  mirrored against the sale; a part-paid or hand-billed sale has nothing here
+  to correct.
 - A deleted membership can't be edited.
 - Every edit appends what changed to an **Edits** tab in the Google Sheet, for
   the same reason deletions get their own tab: the history tabs are

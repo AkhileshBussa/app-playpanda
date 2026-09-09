@@ -244,14 +244,7 @@ export async function mirrorEdit(input: {
   };
   note("Customer", before.customerName, after.customerName);
   note("Kids", before.kidNames || "—", after.kidNames || "—");
-  note("Plan", before.planName, after.planName);
-  note("Total plays", before.totalPlays ?? "Unlimited", after.totalPlays ?? "Unlimited");
-  note("Hours/play", before.hoursPerPlay, after.hoursPerPlay);
-  note("Kids/play", before.kidsPerPlay, after.kidsPerPlay);
-  note("Mon–Fri only", before.weekdaysOnly, after.weekdaysOnly);
-  note("Starts", before.startsOn, after.startsOn);
-  note("Expires", before.expiresOn, after.expiresOn);
-  note("Recorded on", istDateTime(before.createdAt), istDateTime(after.createdAt));
+  note("Created on", istDateTime(before.createdAt), istDateTime(after.createdAt));
   note("Paid by", before.paidBy || "—", after.paidBy || "—");
   note("Notes", before.notes || "—", after.notes || "—");
   if (!changed.length) return;
