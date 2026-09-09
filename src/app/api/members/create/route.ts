@@ -136,7 +136,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Created date can't be in the future" }, { status: 400 });
   }
 
-  const startsOn = input.startsOn ?? todayIST();
+  // A membership starts the day it's recorded; startsOn stays accepted for a
+  // caller that means something different by it.
+  const startsOn = input.startsOn ?? input.createdOn ?? todayIST();
   const expiresOn = addMonths(startsOn, plan.validityMonths);
   const kidNames = input.kidNames
     .split(",")

@@ -17,7 +17,9 @@ first — saving the form is what raises the invoice.
    is no "pay later" option; only Card offers a reference field). **Created
    on** defaults to today and can be back-dated for a sale taken on an earlier
    day — it moves the membership's place in the ledger, not the Swipe invoice,
-   which is always dated today.
+   which is always dated today. There is no separate start date: a membership
+   starts the day it's recorded, so that one date sets both (and the expiry is
+   counted from it).
 3. Saving **creates the sale invoice in Swipe** on the plan's sale product,
    records the payment against it, mirrors both into our own ledger, and
    stores the membership — in that order, so a duplicate warning or a

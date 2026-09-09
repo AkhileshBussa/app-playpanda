@@ -63,7 +63,7 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(PAYMENT_METHODS[0]);
   const [transactionRef, setTransactionRef] = useState("");
   const [saleInvoice, setSaleInvoice] = useState("");
-  const [startsOn, setStartsOn] = useState(todayIST());
+  // One date: a membership starts the day it's recorded, so this drives both.
   const [createdOn, setCreatedOn] = useState(todayIST());
   const [notes, setNotes] = useState("");
   // Custom plan fields
@@ -151,8 +151,8 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
   const fixedPlan = MEMBERSHIP_PLANS.find((p) => p.key === planKey);
   const validityMonths = isCustom ? parseInt(customValidity) || 0 : fixedPlan?.validityMonths ?? 0;
   const expiresOn =
-    /^\d{4}-\d{2}-\d{2}$/.test(startsOn) && validityMonths > 0
-      ? addMonths(startsOn, validityMonths)
+    /^\d{4}-\d{2}-\d{2}$/.test(createdOn) && validityMonths > 0
+      ? addMonths(createdOn, validityMonths)
       : null;
 
   // Fixed plans show only the sales carrying that plan's product; a custom
@@ -207,7 +207,6 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
         paymentMethod: saleMode === "bill" ? paymentMethod : undefined,
         transactionRef: transactionRef.trim(),
         saleInvoiceNumber: saleMode === "link" ? saleInvoice.trim() : "",
-        startsOn,
         createdOn,
         notes: notes.trim(),
         force,
@@ -636,16 +635,6 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
           </div>
 
           <div>
-            <label className={labelClass}>Starts on</label>
-            <input
-              type="date"
-              value={startsOn}
-              onChange={(e) => setStartsOn(e.target.value)}
-              className={inputClass}
-            />
-          </div>
-
-          <div>
             <label className={labelClass}>Created on</label>
             <input
               type="date"
@@ -655,8 +644,9 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
               className={inputClass}
             />
             <p className="mt-1 px-1 text-xs font-bold text-ink/40">
-              Which day this membership is recorded under — back-date it for a sale
-              taken earlier. The Swipe invoice is always dated today.
+              The day this membership is recorded under, and the day it starts —
+              back-date it for a sale taken earlier. The Swipe invoice is always
+              dated today.
             </p>
           </div>
 
