@@ -22,6 +22,9 @@ first — saving the form is what raises the invoice.
    records the payment against it, mirrors both into our own ledger, and
    stores the membership — in that order, so a duplicate warning or a
    validation error never leaves a stray invoice behind.
+   A number that already holds an active membership is not blocked: the form
+   shows what that member already has and asks to confirm, then creates the
+   second one on **Create anyway**.
 4. When the member visits, the manager looks up the phone number on
    `/members` — it shows plays used, plays allowed, plays left, and expiry.
 5. If plays are left, **Punch a visit** deducts them (2 kids on one visit =

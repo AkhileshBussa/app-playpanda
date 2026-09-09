@@ -145,15 +145,22 @@ export async function POST(req: Request) {
 
   try {
     // Advisory duplicate check (same pattern as the school log): warn when this
-    // phone already has an ACTIVE membership on the same plan; force to proceed.
+    // phone already holds an ACTIVE membership; the counter confirms to proceed.
     if (!input.force) {
       const existing = await listMembershipsByPhone(input.phone);
       const today = todayIST();
-      const dup = existing.find(
-        (m) => m.planName === plan.planName && membershipStatus(m, today) === "active"
-      );
+      const active = existing.filter((m) => membershipStatus(m, today) === "active");
+      const dup = active.find((m) => m.planName === plan.planName) ?? active[0];
       if (dup) {
-        return NextResponse.json({ duplicate: true, existing: dup }, { status: 409 });
+        return NextResponse.json(
+          {
+            duplicate: true,
+            existing: dup,
+            activeCount: active.length,
+            samePlan: dup.planName === plan.planName,
+          },
+          { status: 409 }
+        );
       }
     }
 

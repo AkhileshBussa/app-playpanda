@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { normalizePhone } from "@/lib/members/types";
+import { normalizePhone, type Membership } from "@/lib/members/types";
+import DuplicateMembershipSheet from "./DuplicateMembershipSheet";
 import { addMonths, MEMBERSHIP_PLANS, PUNCH_PRODUCTS } from "@/lib/members/plans";
 import { PAYMENT_METHODS, type PaymentMethod } from "@/lib/billing/types";
 
@@ -77,14 +78,16 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   // Today's membership sales from Swipe; null while loading.
   const [saleOptions, setSaleOptions] = useState<SaleInvoiceOption[] | null>(null);
   const [salesError, setSalesError] = useState<string | null>(null);
   /** Typing the number instead of picking (sale billed earlier, or Swipe down). */
   const [manualInvoice, setManualInvoice] = useState(false);
-  // Armed after the duplicate warning; the next submit forces.
-  const forceArmed = useRef(false);
+  const [duplicate, setDuplicate] = useState<{
+    existing: Membership;
+    activeCount: number;
+    samePlan: boolean;
+  } | null>(null);
 
   // Once a full number is typed, pull the customer's name and kids from Swipe
   // so the manager doesn't retype what billing already knows. Fills blanks only
@@ -183,8 +186,12 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
     if (next && !customerName.trim() && sale.customerName) setCustomerName(sale.customerName);
   };
 
-  const submit = async (e: React.FormEvent) => {
+  const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    void save(false);
+  };
+
+  const save = async (force: boolean) => {
     if (saving) return;
     setSaving(true);
     setError(null);
@@ -203,7 +210,7 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
         startsOn,
         createdOn,
         notes: notes.trim(),
-        force: forceArmed.current,
+        force,
       };
       if (isCustom) {
         body.custom = {
@@ -230,12 +237,15 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
         return;
       }
       if (res.status === 409 && data.duplicate) {
-        forceArmed.current = true;
-        setNotice(
-          "This number already has an active membership on the same plan — tap Save again to add another anyway."
-        );
+        setDuplicate({
+          existing: data.existing as Membership,
+          activeCount: (data.activeCount as number) ?? 1,
+          samePlan: Boolean(data.samePlan),
+        });
+        setSaving(false);
         return;
       }
+      setDuplicate(null);
       if (!res.ok || !data.membership) {
         throw new Error(data.error || "Couldn't save — please try again");
       }
@@ -676,9 +686,6 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
             </p>
           )}
 
-          {notice && (
-            <p className="rounded-2xl bg-yellow/25 px-3 py-2 text-sm font-bold text-ink/80">{notice}</p>
-          )}
           {error && <p className="px-1 text-sm font-bold text-coral">{error}</p>}
 
           <button
@@ -689,6 +696,18 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
             {saving ? "Saving…" : "Save membership"}
           </button>
       </form>
+
+      {duplicate && (
+        <DuplicateMembershipSheet
+          existing={duplicate.existing}
+          activeCount={duplicate.activeCount}
+          samePlan={duplicate.samePlan}
+          planName={isCustom ? customName.trim() || "custom plan" : fixedPlan?.name ?? "membership"}
+          busy={saving}
+          onCancel={() => setDuplicate(null)}
+          onConfirm={() => void save(true)}
+        />
+      )}
     </div>
   );
 }
