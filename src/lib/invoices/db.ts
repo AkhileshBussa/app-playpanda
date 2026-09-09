@@ -280,6 +280,25 @@ export async function recordPaymentMirror(input: RecordPaymentMirrorInput): Prom
 }
 
 /**
+ * Correct how a payment was taken — Cash entered when it was UPI, a missing
+ * card reference. Only our ledger changes: the billing system keeps whatever
+ * method it recorded, so callers should say so.
+ */
+export async function updatePaymentMethod(input: {
+  paymentId: string;
+  method: string;
+  transactionRef: string;
+}): Promise<boolean> {
+  await ensureSchema();
+  const { rowCount } = await getPool().query(
+    `UPDATE payments SET method = $2, transaction_ref = $3, last_updated_at = now()
+     WHERE id = $1`,
+    [input.paymentId, input.method, input.transactionRef]
+  );
+  return Boolean(rowCount);
+}
+
+/**
  * Re-price the mirror after a counter discount rewrote the invoice. Items are
  * scaled by the same net/gross ratio the re-pricing used, so line totals keep
  * summing to the header.

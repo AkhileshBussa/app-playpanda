@@ -18,6 +18,7 @@ import { playsLeft } from "./types";
 const MEMBERSHIPS_TAB = "Memberships";
 const VISITS_TAB = "Visits";
 const DELETIONS_TAB = "Deletions";
+const EDITS_TAB = "Edits";
 
 export const MEMBERSHIP_HEADERS = [
   "Created at (IST)", "Phone", "Customer", "Kids", "Plan", "Total plays",
@@ -34,6 +35,12 @@ export const VISIT_HEADERS = [
 // history in place.
 export const DELETION_HEADERS = [
   "Deleted at (IST)", "What", "Phone", "Customer", "Plan", "Detail", "Reason", "ID",
+];
+
+// Same reason as deletions: an edit is logged as what changed, rather than
+// rewriting the membership's original row.
+export const EDIT_HEADERS = [
+  "Edited at (IST)", "Phone", "Customer", "Plan", "Changed", "Membership ID",
 ];
 
 function config(): { sheetId: string; email: string; key: string } | null {
@@ -137,7 +144,9 @@ export async function setupSheetTabs(): Promise<string[]> {
   const meta = (await metaRes.json()) as { sheets?: Array<{ properties: { title: string } }> };
   const existing = new Set((meta.sheets ?? []).map((s) => s.properties.title));
 
-  const missing = [MEMBERSHIPS_TAB, VISITS_TAB, DELETIONS_TAB].filter((t) => !existing.has(t));
+  const missing = [MEMBERSHIPS_TAB, VISITS_TAB, DELETIONS_TAB, EDITS_TAB].filter(
+    (t) => !existing.has(t)
+  );
   if (missing.length) {
     const res = await fetch(`${base}:batchUpdate`, {
       method: "POST",
@@ -152,6 +161,7 @@ export async function setupSheetTabs(): Promise<string[]> {
     [MEMBERSHIPS_TAB, MEMBERSHIP_HEADERS],
     [VISITS_TAB, VISIT_HEADERS],
     [DELETIONS_TAB, DELETION_HEADERS],
+    [EDITS_TAB, EDIT_HEADERS],
   ] as const) {
     const range = encodeURIComponent(`${tab}!A1`);
     const res = await fetch(`${base}/values/${range}?valueInputOption=RAW`, {
@@ -219,6 +229,44 @@ export async function mirrorDeletion(input: {
     ]);
   } catch (err) {
     console.error("sheets mirror (deletion) failed:", err);
+  }
+}
+
+/** Log what an edit changed, field by field. Best-effort — never throws. */
+export async function mirrorEdit(input: {
+  before: Membership;
+  after: Membership;
+}): Promise<void> {
+  const { before, after } = input;
+  const changed: string[] = [];
+  const note = (label: string, from: unknown, to: unknown) => {
+    if (String(from) !== String(to)) changed.push(`${label}: ${from} → ${to}`);
+  };
+  note("Customer", before.customerName, after.customerName);
+  note("Kids", before.kidNames || "—", after.kidNames || "—");
+  note("Plan", before.planName, after.planName);
+  note("Total plays", before.totalPlays ?? "Unlimited", after.totalPlays ?? "Unlimited");
+  note("Hours/play", before.hoursPerPlay, after.hoursPerPlay);
+  note("Kids/play", before.kidsPerPlay, after.kidsPerPlay);
+  note("Mon–Fri only", before.weekdaysOnly, after.weekdaysOnly);
+  note("Starts", before.startsOn, after.startsOn);
+  note("Expires", before.expiresOn, after.expiresOn);
+  note("Recorded on", istDateTime(before.createdAt), istDateTime(after.createdAt));
+  note("Paid by", before.paidBy || "—", after.paidBy || "—");
+  note("Notes", before.notes || "—", after.notes || "—");
+  if (!changed.length) return;
+
+  try {
+    await appendRow(EDITS_TAB, [
+      istDateTime(Date.now()),
+      after.phone,
+      after.customerName,
+      after.planName,
+      changed.join(" · "),
+      after.id,
+    ]);
+  } catch (err) {
+    console.error("sheets mirror (edit) failed:", err);
   }
 }
 

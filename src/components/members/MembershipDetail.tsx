@@ -6,6 +6,7 @@ import { useState } from "react";
 import type { Membership, MembershipStatus, MembershipVisit } from "@/lib/members/types";
 import { membershipStatus, playsLeft, saleDueLabel } from "@/lib/members/types";
 import DeleteReasonSheet from "./DeleteReasonSheet";
+import EditMembershipSheet from "./EditMembershipSheet";
 import RecordVisitSheet from "./RecordVisitSheet";
 import type { ApiMembership } from "./MembersApp";
 
@@ -42,6 +43,7 @@ const dateTimeIST = (ms: number) =>
 export default function MembershipDetail({ membership, visits, today }: MembershipDetailProps) {
   const router = useRouter();
   const [punching, setPunching] = useState(false);
+  const [editing, setEditing] = useState(false);
   /** Which delete is being confirmed: the membership, or one punch. */
   const [confirming, setConfirming] = useState<{ kind: "membership" } | { kind: "punch"; visit: MembershipVisit } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -174,6 +176,11 @@ export default function MembershipDetail({ membership, visits, today }: Membersh
               Sale {membership.saleInvoiceNumber}
             </span>
           )}
+          {membership.paidBy && (
+            <span className="rounded-full bg-cream px-2.5 py-1 text-ink/60">
+              Paid by {membership.paidBy}
+            </span>
+          )}
           {saleDueLabel(membership) && (
             <span className="rounded-full bg-coral/15 px-2.5 py-1 text-coral">
               {saleDueLabel(membership)}
@@ -186,14 +193,26 @@ export default function MembershipDetail({ membership, visits, today }: Membersh
         )}
 
         {!isDeleted && (
-          <button
-            type="button"
-            disabled={status !== "active"}
-            onClick={() => setPunching(true)}
-            className="mt-4 w-full rounded-full bg-teal py-3 text-base font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed disabled:opacity-40 disabled:shadow-none sm:w-auto sm:px-8"
-          >
-            Punch a visit
-          </button>
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+            <button
+              type="button"
+              disabled={status !== "active"}
+              onClick={() => setPunching(true)}
+              className="w-full rounded-full bg-teal py-3 text-base font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed disabled:opacity-40 disabled:shadow-none sm:w-auto sm:px-8"
+            >
+              Punch a visit
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setEditing(true);
+              }}
+              className="w-full rounded-full bg-cream py-3 text-base font-black text-ink/70 transition-all active:translate-y-0.5 hover:text-ink sm:w-auto sm:px-8"
+            >
+              Edit
+            </button>
+          </div>
         )}
       </section>
 
@@ -287,6 +306,23 @@ export default function MembershipDetail({ membership, visits, today }: Membersh
             setPunching(false);
             setNotice(
               `Visit punched${v.punchInvoiceNumber ? ` — ${v.punchInvoiceNumber}` : ""}. Session is live on the monitor.`
+            );
+            router.refresh();
+          }}
+        />
+      )}
+
+      {editing && (
+        <EditMembershipSheet
+          membership={membership}
+          onClose={() => setEditing(false)}
+          onSaved={(saved, warning) => {
+            setEditing(false);
+            setNotice(
+              `Membership updated.${warning ? ` ${warning}` : ""}` +
+                (saved.planName !== membership.planName
+                  ? " Future punches bill against the new plan's product."
+                  : "")
             );
             router.refresh();
           }}

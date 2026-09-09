@@ -132,6 +132,33 @@ lookup, creating does not.
 - `/members/<id>` — one membership: its terms, every punch, and deletions.
   Reached by clicking a membership anywhere it's listed.
 
+## Editing
+
+**Edit** on a membership's own page fixes what was entered wrong, without
+touching money. Editable: the parent's name, kid names, which plan it is, the
+plan's terms (plays, hours/play, kids/play, Mon–Fri only), the start and
+expiry dates, the day it's **recorded on** in the ledger, how the sale was
+**paid by**, and the notes.
+
+- **The price and the Swipe sale invoice are never touched.** An edit can
+  widen a plan or fix a name; it can't make our ledger disagree with Swipe
+  about what was charged. A genuinely wrong charge is a Swipe job.
+- **Paid by corrects our ledger only** — Swipe keeps the method it recorded,
+  and the reply says so. The field is offered only when exactly one of our
+  payments is mirrored against the sale; a part-paid or hand-billed sale has
+  nothing here to correct.
+- **The total can't drop below the plays already punched** — those are real
+  visits. Expiry can't precede the start date, and the recorded-on day can't
+  be in the future.
+- **The phone number is not editable.** It keys the family; a membership sold
+  on the wrong number is a delete and a fresh sale.
+- **Switching plan** repoints future punches at the new plan's Swipe punch
+  product. Punches already made keep the invoices they were billed on.
+- A deleted membership can't be edited.
+- Every edit appends what changed to an **Edits** tab in the Google Sheet, for
+  the same reason deletions get their own tab: the history tabs are
+  append-only. Re-run `npx tsx scripts/setup-sheets.ts` once to create it.
+
 ## Deleting
 
 Nothing is ever removed from the database. Deleting a membership or a punch
@@ -153,7 +180,8 @@ and the counter's punch lookup. Both actions live on the membership's own page.
   `npx tsx scripts/setup-sheets.ts` once to create that tab.
 - `GET /api/members/lookup?phone=` · `POST /api/members/create`
   (bills the sale, takes the payment, records the membership) ·
-  `POST /api/members/visit` · `GET /api/members/sale-invoices` ·
+  `PATCH /api/members/edit` · `POST /api/members/visit` ·
+  `GET /api/members/sale-invoices` ·
   `GET /api/members/export?what=memberships|visits`
   (all gated by the ops password cookie)
 

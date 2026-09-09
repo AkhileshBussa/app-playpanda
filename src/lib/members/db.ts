@@ -40,6 +40,10 @@ function toMembership(r: any): Membership {
     priceInr: r.price_inr == null ? null : Number(r.price_inr),
     saleInvoiceNumber: r.sale_invoice_number ?? "",
     saleDueInr: r.sale_due_inr == null ? null : Number(r.sale_due_inr),
+    paidBy: r.paid_by ?? "",
+    paidByRef: r.paid_by_ref ?? "",
+    salePaymentCount: Number(r.sale_payment_count ?? 0),
+    salePaymentId: Number(r.sale_payment_count ?? 0) === 1 ? r.sale_payment_id : null,
     weekdaysOnly: r.weekdays_only,
     oncePerDay: r.once_per_day,
     startsOn: r.starts_on,
@@ -76,11 +80,20 @@ const MEMBERSHIP_SELECT = `
     si.number AS sale_invoice_number,
     CASE WHEN si.source = 'membership_sale' AND si.cancelled_at IS NULL
       THEN GREATEST(si.net_inr - si.amount_paid_inr, 0) END AS sale_due_inr,
+    pay.n AS sale_payment_count, pay.id AS sale_payment_id,
+    pay.method AS paid_by, pay.transaction_ref AS paid_by_ref,
     COALESCE(v.used, 0) AS plays_used_total
   FROM memberships m
   JOIN customers c ON c.id = m.customer_id
   JOIN products p ON p.id = m.product_id
   LEFT JOIN invoices si ON si.id = m.sale_invoice_id
+  LEFT JOIN LATERAL (
+    SELECT count(*)::int AS n,
+      (array_agg(p2.id ORDER BY p2.paid_at DESC))[1] AS id,
+      (array_agg(p2.method ORDER BY p2.paid_at DESC))[1] AS method,
+      (array_agg(p2.transaction_ref ORDER BY p2.paid_at DESC))[1] AS transaction_ref
+    FROM payments p2 WHERE p2.invoice_id = m.sale_invoice_id
+  ) pay ON TRUE
   LEFT JOIN (
     SELECT membership_id, SUM(plays_used) AS used
     FROM membership_visits WHERE deleted_at IS NULL GROUP BY membership_id
@@ -180,6 +193,74 @@ export async function createMembership(input: CreateMembershipInput): Promise<Me
   const created = await getMembership(rows[0].id);
   if (!created) throw new Error("membership vanished after insert");
   return created;
+}
+
+export interface UpdateMembershipInput {
+  id: string;
+  customerName: string;
+  kidNames: string;
+  planKey: string;
+  planName: string;
+  punchProductId: number;
+  punchProductName: string;
+  punchTaxRatePercent?: number;
+  totalPlays: number | null;
+  hoursPerPlay: number;
+  kidsPerPlay: number;
+  weekdaysOnly: boolean;
+  oncePerDay: boolean;
+  startsOn: string;
+  expiresOn: string;
+  /** IST day the membership is recorded under; omit to leave it where it is. */
+  createdOn?: string | null;
+  notes: string;
+}
+
+/**
+ * Rewrite a membership's terms in place. Money is deliberately absent: the
+ * price and the sale invoice stand as billed, so an edit can never leave the
+ * ledger disagreeing with Swipe. Phone is absent too — that keys the family,
+ * and moving a membership to another number is a delete-and-resell.
+ * Returns null when the membership is gone or already deleted.
+ */
+export async function updateMembership(input: UpdateMembershipInput): Promise<Membership | null> {
+  await ensureSchema();
+  const existing = await getMembership(input.id);
+  if (!existing || existing.deletedAt != null) return null;
+
+  await upsertCustomer({
+    phone: existing.phone,
+    name: input.customerName,
+    kidNames: input.kidNames,
+  });
+  const productId = await ensureProduct({
+    swipeRef: String(input.punchProductId),
+    name: input.punchProductName,
+    kind: "membership_punch",
+    itemType: "Service",
+    priceInr: null,
+    taxRatePercent: input.punchTaxRatePercent ?? 18,
+  });
+
+  const { rowCount } = await getPool().query(
+    `UPDATE memberships SET
+       product_id = $2, plan_key = $3, plan_name = $4, kid_names = $5,
+       total_plays = $6, hours_per_play = $7, kids_per_play = $8,
+       weekdays_only = $9, once_per_day = $10,
+       starts_on = $11::date, expires_on = $12::date, notes = $13,
+       created_at = COALESCE(
+         ($14::date + time '12:00') AT TIME ZONE 'Asia/Kolkata', created_at),
+       last_updated_at = now()
+     WHERE id = $1 AND deleted_at IS NULL`,
+    [
+      input.id, productId, input.planKey, input.planName, input.kidNames,
+      input.totalPlays, input.hoursPerPlay, input.kidsPerPlay,
+      input.weekdaysOnly, input.oncePerDay, input.startsOn, input.expiresOn,
+      input.notes, input.createdOn ?? null,
+    ]
+  );
+  if (!rowCount) return null;
+  return getMembership(input.id);
 }
 
 export async function getMembership(id: string): Promise<Membership | null> {
