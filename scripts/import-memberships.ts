@@ -1,19 +1,20 @@
 /**
- * One-off import of the "Memberships Tracker" sheet into Postgres.
+ * Insert memberships from the REVIEWED CSV that prepare-membership-import.ts
+ * writes (and a human has checked).
  *
- *   npx tsx scripts/import-memberships.ts "<csv path>"            # dry run
- *   npx tsx scripts/import-memberships.ts "<csv path>" --commit   # write
+ *   npx tsx scripts/import-memberships.ts "<review csv>"            # dry run
+ *   npx tsx scripts/import-memberships.ts "<review csv>" --commit   # write
  *
- * The sheet is a hand-kept tracker, so parsing is deliberately forgiving and
- * loud: every repair and every row it refuses is printed, and a dry run writes
- * the whole plan to JSON for reading before anything is inserted.
+ * This script deliberately knows nothing about the tracker sheet or Swipe: the
+ * reviewed CSV is the source of truth, so a wrong row is fixed in the file
+ * rather than in code. Rows whose `import` column isn't "yes" are skipped.
  *
- * Punches are inserted straight into membership_visits rather than through
- * recordVisit(), for two reasons: recordVisit enforces expiry and plays-left
- * (historical rows break both), and it raises a ₹0 invoice in Swipe, which
- * would mean hundreds of new documents for visits that happened months ago.
+ * Punches go straight into membership_visits rather than through recordVisit():
+ * that path enforces expiry and plays-left (historical rows break both) and it
+ * raises a ₹0 invoice in Swipe, which would mean hundreds of new documents for
+ * visits that happened months ago.
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 
@@ -26,45 +27,6 @@ try {
 } catch {
   // Rely on the shell environment.
 }
-
-interface PlanShape {
-  planKey: string;
-  planName: string;
-  punchProductId: number;
-  totalPlays: number | null;
-  hoursPerPlay: number;
-  kidsPerPlay: number;
-  validityMonths: number;
-  weekdaysOnly: boolean;
-  oncePerDay: boolean;
-}
-
-const CATALOG_KEYS: Record<string, string> = {
-  "fun five pass": "fun-five",
-  "fun ten pass": "fun-ten",
-  "fun five pass 10 - 1hr": "fun-ten",
-  "panda pro 12": "pro-12",
-  "panda max 25": "max-25",
-  "supervised play pass": "supervised",
-};
-
-/**
- * Sheet plans with no product behind them in Swipe. Left out on purpose:
- * a membership has to punch against a real Swipe product, so these want a
- * product created first and then hand entry.
- */
-const NO_SWIPE_PRODUCT = new Set([
-  "fun five pass 1hr",
-  "panda max 50 - 1hr",
-  "unlimited(48)",
-]);
-
-/** Rows whose phone cell is empty but whose owner is known from the sheet. */
-const PHONE_OVERRIDES: Record<number, string> = {
-  20: "8979308484",
-};
-
-const NON_DATE_MARKERS = ["membership completed", "completed", "/", "-"];
 
 function splitCsv(text: string): string[][] {
   const rows: string[][] = [];
@@ -100,226 +62,134 @@ function splitCsv(text: string): string[][] {
   return rows;
 }
 
-interface DateParse {
-  date: string | null;
-  repaired?: string;
-  problem?: string;
-}
-
-/** Sheet dates are D/M/YY-ish, with typos. Returns YYYY-MM-DD in IST terms. */
-function parseSheetDate(raw: string): DateParse {
-  const value = raw.trim().replace(/\s+/g, "");
-  if (!value) return { date: null };
-  if (NON_DATE_MARKERS.includes(value.toLowerCase())) {
-    return { date: null, problem: `marker "${raw.trim()}"` };
-  }
-
-  let parts = value.split(/[/-]/).filter(Boolean);
-
-  if (parts.length === 2 && /^\d{4}$/.test(parts[0])) {
-    parts = [parts[0].slice(0, 2), parts[0].slice(2), parts[1]];
-  }
-  if (parts.length === 2 && /^\d{4}$/.test(parts[1])) {
-    parts = [parts[0], parts[1].slice(0, 2), parts[1].slice(2)];
-  }
-  if (parts.length !== 3) return { date: null, problem: `unparseable "${raw.trim()}"` };
-
-  let [d, m, y] = parts.map((p) => parseInt(p, 10));
-  if ([d, m, y].some((n) => isNaN(n))) return { date: null, problem: `unparseable "${raw.trim()}"` };
-
-  const year = y < 100 ? 2000 + y : y;
-  let repaired: string | undefined;
-
-  if (m === 0 || m > 12) return { date: null, problem: `bad month in "${raw.trim()}"` };
-  if (d === 0 || d > 31) {
-    const swapped = parseInt(String(d).split("").reverse().join(""), 10);
-    if (swapped >= 1 && swapped <= 31) {
-      repaired = `day ${d} → ${swapped}`;
-      d = swapped;
-    } else return { date: null, problem: `bad day in "${raw.trim()}"` };
-  }
-  const iso = `${year}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-  const back = new Date(`${iso}T00:00:00Z`);
-  if (isNaN(back.getTime()) || back.getUTCDate() !== d) {
-    return { date: null, problem: `not a real date "${raw.trim()}"` };
-  }
-  if (value !== `${parts[0]}/${parts[1]}/${parts[2]}`) {
-    repaired = repaired ?? `read "${raw.trim()}" as ${iso}`;
-  }
-  return { date: iso, repaired };
-}
-
-const todayIST = () =>
-  new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
-
-function addMonths(date: string, months: number): string {
-  const [y, m, d] = date.split("-").map(Number);
-  const idx = m - 1 + months;
-  const lastDay = new Date(Date.UTC(y, idx + 1, 0)).getUTCDate();
-  return new Date(Date.UTC(y, idx, Math.min(d, lastDay))).toISOString().slice(0, 10);
-}
-
-function cleanKidNames(raw: string): string {
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s && !/^\d*\s*hrs?$/i.test(s))
-    .join(", ");
-}
-
-interface Planned {
-  sheetRow: number;
-  phone: string;
-  customerName: string;
-  kidNames: string;
-  plan: PlanShape;
-  sheetPlan: string;
-  startsOn: string;
-  expiresOn: string;
-  visits: string[];
-  notes: string[];
-}
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 async function main() {
   const csvPath = process.argv[2];
   const commit = process.argv.includes("--commit");
-  if (!csvPath) throw new Error('Usage: import-memberships.ts "<csv path>" [--commit]');
+  if (!csvPath) throw new Error('Usage: import-memberships.ts "<review csv>" [--commit]');
 
   const rows = splitCsv(readFileSync(csvPath, "utf8"));
-  const planned: Planned[] = [];
-  const refused: Array<{ sheetRow: number; who: string; why: string }> = [];
-  const repairs: string[] = [];
+  const header = rows[0].map((h) => h.trim());
+  const col = (name: string) => {
+    const i = header.indexOf(name);
+    if (i < 0) throw new Error(`CSV is missing the "${name}" column`);
+    return i;
+  };
+  const idx = {
+    sheetRow: col("sheet_row"),
+    parent: col("parent_name"),
+    kids: col("kid_names"),
+    phone: col("phone"),
+    planKey: col("plan_key"),
+    createdOn: col("created_on"),
+    expiresOn: col("expires_on"),
+    punchDates: col("punch_dates"),
+    invoice: col("invoice_number"),
+    invoiceDate: col("invoice_date"),
+    invoiceTotal: col("invoice_total_inr"),
+    planAmount: col("plan_amount_inr"),
+    paidBy: col("paid_by"),
+    paidByRef: col("paid_by_ref"),
+    notes: col("notes"),
+    import: col("import"),
+  };
 
-  const { MEMBERSHIP_PLANS } = await import("../src/lib/members/plans");
+  const { getPlan } = await import("../src/lib/members/plans");
+
+  interface Ready {
+    sheetRow: string;
+    phone: string;
+    parent: string;
+    kids: string;
+    planKey: string;
+    createdOn: string;
+    expiresOn: string;
+    visits: string[];
+    invoice: string;
+    invoiceDate: string;
+    invoiceTotal: number | null;
+    priceInr: number | null;
+    paidBy: string;
+    paidByRef: string;
+    notes: string;
+  }
+
+  const ready: Ready[] = [];
+  const skipped: string[] = [];
 
   for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    const sheetRow = i + 1;
-    if (!row.some((c) => c.trim())) continue;
+    const r = rows[i];
+    if (!r.some((c) => c.trim())) continue;
+    const sheetRow = r[idx.sheetRow]?.trim() || String(i + 1);
+    const who = `${r[idx.parent] || "?"} (${r[idx.phone] || "no phone"})`;
 
-    const parent = (row[0] ?? "").trim();
-    const kidNames = cleanKidNames(row[1] ?? "");
-    const phone = ((row[3] ?? "").replace(/\D/g, "") || PHONE_OVERRIDES[sheetRow] || "").slice(-10);
-    const sheetPlan = (row[4] ?? "").trim();
-    const who = `${parent || kidNames || "?"} (${phone || "no phone"})`;
-
+    if ((r[idx.import] ?? "").trim().toLowerCase() !== "yes") {
+      skipped.push(`row ${sheetRow} ${who}: import="${(r[idx.import] ?? "").trim()}"`);
+      continue;
+    }
+    const phone = (r[idx.phone] ?? "").replace(/\D/g, "");
+    const planKey = (r[idx.planKey] ?? "").trim();
+    const plan = getPlan(planKey);
     if (phone.length !== 10) {
-      refused.push({ sheetRow, who, why: "no usable 10-digit phone" });
+      skipped.push(`row ${sheetRow} ${who}: phone isn't 10 digits`);
       continue;
-    }
-    if (!sheetPlan) {
-      refused.push({ sheetRow, who, why: "no plan named" });
-      continue;
-    }
-
-    const key = sheetPlan.toLowerCase().replace(/\s+/g, " ").trim();
-    if (NO_SWIPE_PRODUCT.has(key)) {
-      refused.push({ sheetRow, who, why: `"${sheetPlan}" has no product in Swipe — enter by hand` });
-      continue;
-    }
-    let plan: PlanShape | null = null;
-    const catalogKey = CATALOG_KEYS[key];
-    if (catalogKey) {
-      const p = MEMBERSHIP_PLANS.find((x) => x.key === catalogKey)!;
-      plan = {
-        planKey: p.key,
-        planName: p.name,
-        punchProductId: p.punchProductId,
-        totalPlays: p.totalPlays,
-        hoursPerPlay: p.hoursPerPlay,
-        kidsPerPlay: p.kidsPerPlay,
-        validityMonths: p.validityMonths,
-        weekdaysOnly: p.weekdaysOnly,
-        oncePerDay: p.oncePerDay,
-      };
     }
     if (!plan) {
-      refused.push({ sheetRow, who, why: `unknown plan "${sheetPlan}"` });
+      skipped.push(`row ${sheetRow} ${who}: plan_key "${planKey}" isn't in the catalogue`);
+      continue;
+    }
+    const createdOn = (r[idx.createdOn] ?? "").trim();
+    const expiresOn = (r[idx.expiresOn] ?? "").trim();
+    if (!DATE.test(createdOn) || !DATE.test(expiresOn)) {
+      skipped.push(`row ${sheetRow} ${who}: created_on/expires_on must be YYYY-MM-DD`);
+      continue;
+    }
+    const visits = (r[idx.punchDates] ?? "")
+      .split(";")
+      .map((d) => d.trim())
+      .filter(Boolean);
+    const badDate = visits.find((d) => !DATE.test(d));
+    if (badDate) {
+      skipped.push(`row ${sheetRow} ${who}: punch date "${badDate}" isn't YYYY-MM-DD`);
+      continue;
+    }
+    if (plan.totalPlays != null && visits.length > plan.totalPlays) {
+      skipped.push(
+        `row ${sheetRow} ${who}: ${visits.length} punches on a ${plan.totalPlays}-play plan`
+      );
       continue;
     }
 
-    const notes: string[] = [];
-    const visits: string[] = [];
-    for (let c = 5; c < row.length; c++) {
-      const parsed = parseSheetDate(row[c] ?? "");
-      if (parsed.repaired) repairs.push(`row ${sheetRow} ${who}: ${parsed.repaired}`);
-      if (parsed.problem) notes.push(`col ${c - 4}: ${parsed.problem}`);
-      if (parsed.date) visits.push(parsed.date);
-    }
-
-    const dobCell = parseSheetDate(row[2] ?? "");
-    const dated = visits.length ? visits.slice().sort()[0] : dobCell.date;
-    const startsOn = dated ?? todayIST();
-    if (!dated) {
-      notes.push("no date anywhere in the sheet — started at the import day");
-    }
-
-    planned.push({
+    const planAmount = (r[idx.planAmount] ?? "").trim();
+    const invoiceTotal = (r[idx.invoiceTotal] ?? "").trim();
+    ready.push({
       sheetRow,
       phone,
-      customerName: parent || kidNames || "Unknown",
-      kidNames,
-      plan,
-      sheetPlan,
-      startsOn,
-      expiresOn: addMonths(startsOn, plan.validityMonths),
+      parent: (r[idx.parent] ?? "").trim() || (r[idx.kids] ?? "").trim() || "Unknown",
+      kids: (r[idx.kids] ?? "").trim(),
+      planKey,
+      createdOn,
+      expiresOn,
       visits,
-      notes,
+      invoice: (r[idx.invoice] ?? "").trim(),
+      invoiceDate: (r[idx.invoiceDate] ?? "").trim(),
+      invoiceTotal: invoiceTotal ? Number(invoiceTotal) : null,
+      priceInr: planAmount ? Number(planAmount) : null,
+      paidBy: (r[idx.paidBy] ?? "").trim(),
+      paidByRef: (r[idx.paidByRef] ?? "").trim(),
+      notes: (r[idx.notes] ?? "").trim(),
     });
   }
 
-  const overPlays = planned.filter(
-    (p) => p.plan.totalPlays != null && p.visits.length > p.plan.totalPlays
-  );
-  const beforeStart = planned.flatMap((p) =>
-    p.visits.filter((v) => v < p.startsOn).map((v) => `row ${p.sheetRow} ${p.customerName}: ${v} before start ${p.startsOn}`)
-  );
-  const afterExpiry = planned.flatMap((p) =>
-    p.visits.filter((v) => v > p.expiresOn).map((v) => `row ${p.sheetRow} ${p.customerName}: ${v} after expiry ${p.expiresOn}`)
-  );
-
-  console.log(`\nParsed ${planned.length} memberships, ${planned.reduce((n, p) => n + p.visits.length, 0)} punches`);
-  console.log(`Plans used:`);
-  const byPlan = new Map<string, number>();
-  for (const p of planned) byPlan.set(`${p.sheetPlan} → ${p.plan.planName}${p.plan.planKey === "custom" ? " (custom)" : ""}`, (byPlan.get(`${p.sheetPlan} → ${p.plan.planName}${p.plan.planKey === "custom" ? " (custom)" : ""}`) ?? 0) + 1);
-  for (const [k, n] of [...byPlan].sort()) console.log(`  ${n.toString().padStart(3)} × ${k}`);
-
-  if (repairs.length) {
-    console.log(`\nRepaired dates (${repairs.length}):`);
-    for (const r of repairs) console.log(`  ${r}`);
+  console.log(`\nReady to insert: ${ready.length} memberships, ${ready.reduce((n, r) => n + r.visits.length, 0)} punches`);
+  console.log(`  with a sale invoice: ${ready.filter((r) => r.invoice).length}`);
+  console.log(`  with paid_by: ${ready.filter((r) => r.paidBy).length}`);
+  console.log(`  with a price: ${ready.filter((r) => r.priceInr != null).length}`);
+  if (skipped.length) {
+    console.log(`\nSkipped (${skipped.length}):`);
+    for (const s of skipped) console.log(`  ${s}`);
   }
-  const withNotes = planned.filter((p) => p.notes.length);
-  if (withNotes.length) {
-    console.log(`\nCells skipped (${withNotes.reduce((n, p) => n + p.notes.length, 0)}):`);
-    for (const p of withNotes) console.log(`  row ${p.sheetRow} ${p.customerName}: ${p.notes.join("; ")}`);
-  }
-  if (overPlays.length) {
-    console.log(`\nMore punches than the plan allows (${overPlays.length}):`);
-    for (const p of overPlays) {
-      console.log(`  row ${p.sheetRow} ${p.customerName}: ${p.visits.length} punches on ${p.plan.planName} (${p.plan.totalPlays} plays)`);
-    }
-  }
-  if (beforeStart.length) {
-    console.log(`\nPunches before the start date (${beforeStart.length}):`);
-    for (const b of beforeStart) console.log(`  ${b}`);
-  }
-  if (afterExpiry.length) {
-    console.log(`\nPunches after expiry (${afterExpiry.length}):`);
-    for (const a of afterExpiry) console.log(`  ${a}`);
-  }
-  if (refused.length) {
-    console.log(`\nRefused rows (${refused.length}):`);
-    for (const r of refused) console.log(`  row ${r.sheetRow} ${r.who}: ${r.why}`);
-  }
-
-  const dumpPath = "/Users/akhilesh/Downloads/playpanda-import-plan.json";
-  writeFileSync(dumpPath, JSON.stringify({ planned, refused, repairs }, null, 2));
-  console.log(`\nFull plan written to ${dumpPath}`);
 
   if (!commit) {
     console.log("\nDry run — nothing written. Re-run with --commit to insert.\n");
@@ -331,32 +201,42 @@ async function main() {
 
   let made = 0;
   let punches = 0;
-  for (const p of planned) {
+  for (const r of ready) {
+    const plan = getPlan(r.planKey)!;
     const membership = await createMembership({
-      phone: p.phone,
-      customerName: p.customerName,
-      kidNames: p.kidNames,
-      planKey: p.plan.planKey,
-      planName: p.plan.planName,
-      punchProductId: p.plan.punchProductId,
-      punchProductName: `${p.plan.planName} - Punch`,
-      totalPlays: p.plan.totalPlays,
-      hoursPerPlay: p.plan.hoursPerPlay,
-      kidsPerPlay: p.plan.kidsPerPlay,
-      priceInr: null,
-      saleInvoiceNumber: "",
-      paidBy: "",
-      paidByRef: "",
-      weekdaysOnly: p.plan.weekdaysOnly,
-      oncePerDay: p.plan.oncePerDay,
-      startsOn: p.startsOn,
-      expiresOn: p.expiresOn,
-      createdOn: p.startsOn,
-      notes: [`Imported from the tracker sheet (row ${p.sheetRow})`, ...p.notes].join(" · "),
+      phone: r.phone,
+      customerName: r.parent,
+      kidNames: r.kids,
+      planKey: plan.key,
+      planName: plan.name,
+      punchProductId: plan.punchProductId,
+      punchProductName: plan.punchProductName,
+      punchTaxRatePercent: plan.taxRatePercent,
+      totalPlays: plan.totalPlays,
+      hoursPerPlay: plan.hoursPerPlay,
+      kidsPerPlay: plan.kidsPerPlay,
+      priceInr: r.priceInr,
+      saleInvoiceNumber: r.invoice,
+      sale: r.invoice
+        ? {
+            totalInr: r.invoiceTotal,
+            issuedAt: DATE.test(r.invoiceDate)
+              ? new Date(`${r.invoiceDate}T12:00:00+05:30`).getTime()
+              : null,
+          }
+        : null,
+      paidBy: r.paidBy,
+      paidByRef: r.paidByRef,
+      weekdaysOnly: plan.weekdaysOnly,
+      oncePerDay: plan.oncePerDay,
+      startsOn: r.createdOn,
+      expiresOn: r.expiresOn,
+      createdOn: r.createdOn,
+      notes: [`Imported from the tracker sheet (row ${r.sheetRow})`, r.notes].filter(Boolean).join(" · "),
     });
     made++;
 
-    for (const date of p.visits) {
+    for (const date of r.visits) {
       await getPool().query(
         `INSERT INTO membership_visits (
            id, membership_id, kids_count, plays_used, kid_names, visited_at, metadata
@@ -364,13 +244,14 @@ async function main() {
         [
           randomUUID(),
           membership.id,
-          p.kidNames,
+          r.kids,
           date,
-          JSON.stringify({ imported_from: "memberships tracker sheet", sheet_row: p.sheetRow }),
+          JSON.stringify({ imported_from: "memberships tracker sheet", sheet_row: r.sheetRow }),
         ]
       );
       punches++;
     }
+    if (made % 10 === 0) console.log(`  …${made} memberships`);
   }
 
   console.log(`\nInserted ${made} memberships and ${punches} punches.\n`);
