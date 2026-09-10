@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { normalizePhone, type Membership } from "@/lib/members/types";
 import DuplicateMembershipSheet from "./DuplicateMembershipSheet";
@@ -15,6 +15,9 @@ interface SaleInvoiceOption {
   amount: number;
   at: number;
   planLines: Array<{ sku: string; name: string; quantity: number }>;
+  /** How Swipe says it was paid; "" when nothing is collected or it's split. */
+  paidBy: "" | PaymentMethod;
+  amountPaid: number;
   /** Already referenced by another membership — a flag, not a block. */
   linked: boolean;
 }
@@ -147,6 +150,19 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
     };
   }, [saleMode, saleOptions]);
 
+  // Typing a number that turns out to be one of today's sales populates from
+  // it too — the pick-list and the keyboard shouldn't behave differently.
+  const appliedInvoice = useRef("");
+  useEffect(() => {
+    const number = saleInvoice.trim();
+    if (!manualInvoice || !number || appliedInvoice.current === number) return;
+    const match = (saleOptions ?? []).find((s) => s.invoiceNumber === number);
+    if (!match) return;
+    appliedInvoice.current = number;
+    applySale(match);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saleInvoice, manualInvoice, saleOptions]);
+
   const isCustom = planKey === "custom";
   const fixedPlan = MEMBERSHIP_PLANS.find((p) => p.key === planKey);
   const validityMonths = isCustom ? parseInt(customValidity) || 0 : fixedPlan?.validityMonths ?? 0;
@@ -179,11 +195,34 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
     if (!manualInvoice) setSaleInvoice("");
   };
 
+  /**
+   * Take from the invoice everything it already knows, so the counter isn't
+   * retyping what Swipe has: the customer, the phone, the plan the sale was
+   * billed on, what it charged and how it was paid. Typed-in values win —
+   * only blanks are filled — except the money and the method, which the
+   * invoice is the authority on.
+   */
+  const applySale = (sale: SaleInvoiceOption) => {
+    if (!customerName.trim() && sale.customerName) setCustomerName(sale.customerName);
+    const salePhoneDigits = normalizePhone(sale.phone);
+    if (normalizePhone(phone).length !== 10 && salePhoneDigits.length === 10) {
+      setPhone(salePhoneDigits);
+    }
+    const billedPlan = MEMBERSHIP_PLANS.find((p) =>
+      sale.planLines.some((l) => l.sku === String(p.saleProductId))
+    );
+    if (billedPlan && billedPlan.key !== planKey) setPlanKey(billedPlan.key);
+    if (sale.amount > 0) setPrice(String(sale.amount));
+    if (sale.paidBy) {
+      setPaymentMethod(sale.paidBy);
+      if (sale.paidBy !== "Card") setTransactionRef("");
+    }
+  };
+
   const pickSale = (sale: SaleInvoiceOption) => {
     const next = saleInvoice === sale.invoiceNumber ? "" : sale.invoiceNumber;
     setSaleInvoice(next);
-    // Fill the name from the invoice only when it's still blank.
-    if (next && !customerName.trim() && sale.customerName) setCustomerName(sale.customerName);
+    if (next) applySale(sale);
   };
 
   const submit = (e: React.FormEvent) => {
@@ -601,6 +640,25 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
               </p>
             )}
 
+            {saleMode === "link" && (
+              <div className="mt-3">
+                <label className={labelClass}>Amount on this membership (₹)</label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  value={price}
+                  onChange={(e) => setPrice(e.target.value)}
+                  className={inputClass}
+                />
+                <p className="mt-1 px-1 text-xs font-bold text-ink/40">
+                  {selectedSale
+                    ? `From ${selectedSale.invoiceNumber} — its total, including anything else on that bill. Trim it to what the plan cost.`
+                    : "Nothing is collected here; this is only what the membership records."}
+                </p>
+              </div>
+            )}
+
             <div className="mt-3">
               <label className={labelClass}>Paid by *</label>
               <div className="flex gap-2">
@@ -634,7 +692,9 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
               <p className="mt-1 px-1 text-xs font-bold text-ink/40">
                 {saleMode === "bill"
                   ? "Collected against the invoice this raises."
-                  : "Recorded on the membership — nothing is collected here."}
+                  : selectedSale?.paidBy
+                    ? `From ${selectedSale.invoiceNumber} — Swipe says ${selectedSale.paidBy}. Change it if that's wrong.`
+                    : "Recorded on the membership — nothing is collected here."}
               </p>
             </div>
           </div>

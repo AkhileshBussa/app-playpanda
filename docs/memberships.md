@@ -47,6 +47,14 @@ fixed plan shows only invoices carrying that plan's product, a custom plan
 shows all of them — and typing the number stays available for older sales or
 when Swipe is unreachable. Nothing is billed or collected in this mode.
 
+**Picking an invoice fills the form from it.** The customer, the phone, the
+plan the sale was billed on, the amount and how Swipe says it was paid all
+come off the chosen invoice instead of being retyped — typed-in values win, so
+only blanks are filled, but the money and the method follow the invoice, which
+is the authority on both. Typing a number that turns out to be one of today's
+sales does the same. The amount is the invoice's grand total, so trim it if
+that bill also carried socks.
+
 **The invoice number is optional here.** A membership entered from an older
 book, or one with no invoice to point at, is saved without it — which is why
 some rows have no sale invoice and no payment of ours behind them. **Paid by

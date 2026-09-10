@@ -298,6 +298,13 @@ export interface MembershipSaleInvoice {
   at: number;
   /** The membership-plan lines on this invoice. */
   planLines: Array<{ sku: string; name: string; quantity: number }>;
+  /**
+   * How it was paid, when the invoice's payments agree on one method —
+   * "" when nothing is collected yet, or when they're split across methods.
+   */
+  paidBy: "" | PaymentMethod;
+  /** Collected so far, INR. Less than `amount` means part-paid. */
+  amountPaid: number;
 }
 
 /**

@@ -29,6 +29,7 @@ import type {
   EditBookingResult,
   EditRefusalReason,
   InvoiceLine,
+  PaymentMethod,
   PaymentResult,
   MembershipPunchInput,
   MembershipSaleInput,
@@ -1690,10 +1691,24 @@ export const swipeBilling: BillingProvider = {
   async listTodayMembershipSales(): Promise<MembershipSaleInvoice[]> {
     // The transaction rows carry the grand total; the line items (and so the
     // plan products) only come from the per-invoice fetch.
-    const totals = new Map<string, number>();
+    const totals = new Map<string, { total: number; paidBy: "" | PaymentMethod; amountPaid: number }>();
     for (const row of await listTodayTransactions()) {
       const id = String(row.new_hash_id ?? "");
-      if (id) totals.set(id, Number(row.total_amount ?? 0));
+      if (!id) continue;
+      const payments = Array.isArray(row.payments)
+        ? (row.payments as Array<Record<string, unknown>>)
+        : [];
+      let amountPaid = 0;
+      const modes = new Set<string>();
+      for (const p of payments) {
+        amountPaid += Number(p.amount ?? 0);
+        const mode = String(p.payment_mode ?? "").toLowerCase();
+        if (mode) modes.add(mode);
+      }
+      const only = modes.size === 1 ? [...modes][0] : "";
+      const paidBy: "" | PaymentMethod =
+        only === "cash" ? "Cash" : only === "card" ? "Card" : only === "upi" ? "UPI" : "";
+      totals.set(id, { total: Number(row.total_amount ?? 0), paidBy, amountPaid });
     }
 
     const invoices = await Promise.all(
@@ -1712,13 +1727,16 @@ export const swipeBilling: BillingProvider = {
         .filter((i) => i.category.toLowerCase().trim() === MEMBERSHIP_SALE_CATEGORY)
         .map((i) => ({ sku: i.sku, name: i.name, quantity: i.quantity }));
       if (planLines.length === 0) continue;
+      const money = totals.get(inv.id);
       sales.push({
         invoiceNumber: inv.serialNumber,
         customerName: inv.partyName,
         phone: inv.phone,
-        amount: totals.get(inv.id) ?? 0,
+        amount: money?.total ?? 0,
         at: inv.bookedAt,
         planLines,
+        paidBy: money?.paidBy ?? "",
+        amountPaid: money?.amountPaid ?? 0,
       });
     }
     return sales.sort((a, b) => b.at - a.at);
