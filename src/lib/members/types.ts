@@ -28,6 +28,13 @@ export interface Membership {
    * null for one billed in Swipe by hand, whose payments we never see.
    */
   saleDueInr: number | null;
+  /** How the sale was paid, per our ledger. "" when no payment is mirrored. */
+  paidBy: string;
+  paidByRef: string;
+  /** Payments mirrored against the sale — >1 means paid_by isn't a single edit. */
+  salePaymentCount: number;
+  /** The one payment to correct, set only when exactly one is mirrored. */
+  salePaymentId: string | null;
   weekdaysOnly: boolean;
   oncePerDay: boolean;
   startsOn: string; // YYYY-MM-DD (IST)

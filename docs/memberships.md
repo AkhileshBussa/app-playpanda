@@ -14,14 +14,22 @@ first — saving the form is what raises the invoice.
    but bill and punch on an existing Swipe product). The amount is prefilled
    from the plan and can be edited, and the payment is taken in the same step
    (Cash / Card / UPI — a sale billed from here is always collected, so there
-   is no "pay later" option; only Card offers a reference field). **Created
+   is no "pay later" option; only Card offers a reference field). **Paid by is
+   required on both paths**: every membership records how it was paid, even
+   one this app never billed, so the answer is never missing from the ledger.
+   **Created
    on** defaults to today and can be back-dated for a sale taken on an earlier
    day — it moves the membership's place in the ledger, not the Swipe invoice,
-   which is always dated today.
+   which is always dated today. There is no separate start date: a membership
+   starts the day it's recorded, so that one date sets both (and the expiry is
+   counted from it).
 3. Saving **creates the sale invoice in Swipe** on the plan's sale product,
    records the payment against it, mirrors both into our own ledger, and
    stores the membership — in that order, so a duplicate warning or a
    validation error never leaves a stray invoice behind.
+   A number that already holds an active membership is not blocked: the form
+   shows what that member already has and asks to confirm, then creates the
+   second one on **Create anyway**.
 4. When the member visits, the manager looks up the phone number on
    `/members` — it shows plays used, plays allowed, plays left, and expiry.
 5. If plays are left, **Punch a visit** deducts them (2 kids on one visit =
@@ -38,6 +46,20 @@ invoiced there). It picks from a list of today's Swipe membership sales — a
 fixed plan shows only invoices carrying that plan's product, a custom plan
 shows all of them — and typing the number stays available for older sales or
 when Swipe is unreachable. Nothing is billed or collected in this mode.
+
+**Picking an invoice fills the form from it.** The customer, the phone, the
+plan the sale was billed on, the amount and how Swipe says it was paid all
+come off the chosen invoice instead of being retyped — typed-in values win, so
+only blanks are filled, but the money and the method follow the invoice, which
+is the authority on both. Typing a number that turns out to be one of today's
+sales does the same. The amount is the invoice's grand total, so trim it if
+that bill also carried socks.
+
+**The invoice number is optional here.** A membership entered from an older
+book, or one with no invoice to point at, is saved without it — which is why
+some rows have no sale invoice and no payment of ours behind them. **Paid by
+is still required**, and lands on the membership itself (`memberships.paid_by`)
+rather than on a payment row, so how it was paid is recorded either way.
 
 ### When something half-lands
 
@@ -129,6 +151,29 @@ lookup, creating does not.
 - `/members/<id>` — one membership: its terms, every punch, and deletions.
   Reached by clicking a membership anywhere it's listed.
 
+## Editing
+
+**Edit** on a membership's own page fixes what was typed wrong: the parent's
+name, the kid names, the day it's **created on**, how the sale was **paid by**,
+and the notes. Nothing else.
+
+- **What was sold is not editable.** The plan, its plays and hours, the price
+  and the Swipe sale invoice stay exactly as billed — an edit here can never
+  make our record contradict Swipe. A wrong plan (or a wrong phone number,
+  which keys the family) is a delete and a fresh sale.
+- **Created on is the start date** — a membership starts the day it's recorded,
+  so one date drives both. Expiry is left as sold: back-dating a record must
+  not quietly change when the customer's pass dies. It can't be in the future.
+- **Paid by is always editable**, because it lives on the membership. When the
+  sale also has exactly one of our payments mirrored against it, that row is
+  corrected to match so the ledger doesn't hold two answers; Swipe keeps the
+  method it recorded, and the reply says so. A sale with several payments is
+  left alone and the reply says that too.
+- A deleted membership can't be edited.
+- Every edit appends what changed to an **Edits** tab in the Google Sheet, for
+  the same reason deletions get their own tab: the history tabs are
+  append-only. Re-run `npx tsx scripts/setup-sheets.ts` once to create it.
+
 ## Deleting
 
 Nothing is ever removed from the database. Deleting a membership or a punch
@@ -150,7 +195,8 @@ and the counter's punch lookup. Both actions live on the membership's own page.
   `npx tsx scripts/setup-sheets.ts` once to create that tab.
 - `GET /api/members/lookup?phone=` · `POST /api/members/create`
   (bills the sale, takes the payment, records the membership) ·
-  `POST /api/members/visit` · `GET /api/members/sale-invoices` ·
+  `PATCH /api/members/edit` · `POST /api/members/visit` ·
+  `GET /api/members/sale-invoices` ·
   `GET /api/members/export?what=memberships|visits`
   (all gated by the ops password cookie)
 

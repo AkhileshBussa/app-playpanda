@@ -40,6 +40,10 @@ function toMembership(r: any): Membership {
     priceInr: r.price_inr == null ? null : Number(r.price_inr),
     saleInvoiceNumber: r.sale_invoice_number ?? "",
     saleDueInr: r.sale_due_inr == null ? null : Number(r.sale_due_inr),
+    paidBy: r.paid_by || r.payment_method || "",
+    paidByRef: r.paid_by_ref || r.payment_ref || "",
+    salePaymentCount: Number(r.sale_payment_count ?? 0),
+    salePaymentId: Number(r.sale_payment_count ?? 0) === 1 ? r.sale_payment_id : null,
     weekdaysOnly: r.weekdays_only,
     oncePerDay: r.once_per_day,
     startsOn: r.starts_on,
@@ -76,11 +80,20 @@ const MEMBERSHIP_SELECT = `
     si.number AS sale_invoice_number,
     CASE WHEN si.source = 'membership_sale' AND si.cancelled_at IS NULL
       THEN GREATEST(si.net_inr - si.amount_paid_inr, 0) END AS sale_due_inr,
+    pay.n AS sale_payment_count, pay.id AS sale_payment_id,
+    pay.method AS payment_method, pay.transaction_ref AS payment_ref,
     COALESCE(v.used, 0) AS plays_used_total
   FROM memberships m
   JOIN customers c ON c.id = m.customer_id
   JOIN products p ON p.id = m.product_id
   LEFT JOIN invoices si ON si.id = m.sale_invoice_id
+  LEFT JOIN LATERAL (
+    SELECT count(*)::int AS n,
+      (array_agg(p2.id ORDER BY p2.paid_at DESC))[1] AS id,
+      (array_agg(p2.method ORDER BY p2.paid_at DESC))[1] AS method,
+      (array_agg(p2.transaction_ref ORDER BY p2.paid_at DESC))[1] AS transaction_ref
+    FROM payments p2 WHERE p2.invoice_id = m.sale_invoice_id
+  ) pay ON TRUE
   LEFT JOIN (
     SELECT membership_id, SUM(plays_used) AS used
     FROM membership_visits WHERE deleted_at IS NULL GROUP BY membership_id
@@ -114,6 +127,9 @@ export interface CreateMembershipInput {
   kidsPerPlay: number;
   priceInr: number | null;
   saleInvoiceNumber: string;
+  /** How the sale was paid — always recorded, even when nothing is billed here. */
+  paidBy: string;
+  paidByRef: string;
   /** The sale's mirror row, when the caller billed it and already mirrored it. */
   saleInvoiceId?: string | null;
   /** Details of a sale invoice billed elsewhere, when the caller looked them up. */
@@ -166,20 +182,73 @@ export async function createMembership(input: CreateMembershipInput): Promise<Me
     `INSERT INTO memberships (
        id, customer_id, product_id, sale_invoice_id, plan_key, plan_name,
        kid_names, total_plays, hours_per_play, kids_per_play, price_inr,
-       weekdays_only, once_per_day, starts_on, expires_on, notes, created_at
+       weekdays_only, once_per_day, starts_on, expires_on, notes, created_at,
+       paid_by, paid_by_ref
      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::date,$15::date,$16,
-       COALESCE(($17::date + time '12:00') AT TIME ZONE 'Asia/Kolkata', now()))
+       COALESCE(($17::date + time '12:00') AT TIME ZONE 'Asia/Kolkata', now()),
+       $18,$19)
      RETURNING id`,
     [
       randomUUID(), customer.id, productId, saleInvoiceId, input.planKey,
       input.planName, input.kidNames, input.totalPlays, input.hoursPerPlay,
       input.kidsPerPlay, input.priceInr, input.weekdaysOnly, input.oncePerDay,
       input.startsOn, input.expiresOn, input.notes, input.createdOn ?? null,
+      input.paidBy, input.paidByRef,
     ]
   );
   const created = await getMembership(rows[0].id);
   if (!created) throw new Error("membership vanished after insert");
   return created;
+}
+
+export interface UpdateMembershipInput {
+  id: string;
+  customerName: string;
+  kidNames: string;
+  /** IST day the membership is recorded under, and the day it starts. */
+  createdOn: string;
+  paidBy: string;
+  paidByRef: string;
+  notes: string;
+}
+
+/**
+ * Correct what was typed wrong on a membership: the names on it, the day it
+ * sits under, how it was paid, its notes.
+ *
+ * Everything that decides what the membership IS stays put — plan, plays,
+ * hours, expiry, price, the sale invoice. Widening a plan after the fact
+ * would leave our record disagreeing with what Swipe billed, so that is a
+ * delete and a fresh sale. Phone is fixed too: it keys the family.
+ *
+ * The membership starts the day it's recorded, so one date drives both.
+ * Expiry is left exactly as sold — moving the record must not quietly change
+ * when the customer's pass dies. paid_by here is the membership's own record
+ * of how it was paid; correcting the mirrored payment too is the caller's job.
+ *
+ * Returns null when the membership is gone or already deleted.
+ */
+export async function updateMembership(input: UpdateMembershipInput): Promise<Membership | null> {
+  await ensureSchema();
+  const existing = await getMembership(input.id);
+  if (!existing || existing.deletedAt != null) return null;
+
+  await upsertCustomer({
+    phone: existing.phone,
+    name: input.customerName,
+    kidNames: input.kidNames,
+  });
+
+  const { rowCount } = await getPool().query(
+    `UPDATE memberships SET
+       kid_names = $2, notes = $3, starts_on = $4::date,
+       created_at = ($4::date + time '12:00') AT TIME ZONE 'Asia/Kolkata',
+       paid_by = $5, paid_by_ref = $6, last_updated_at = now()
+     WHERE id = $1 AND deleted_at IS NULL`,
+    [input.id, input.kidNames, input.notes, input.createdOn, input.paidBy, input.paidByRef]
+  );
+  if (!rowCount) return null;
+  return getMembership(input.id);
 }
 
 export async function getMembership(id: string): Promise<Membership | null> {

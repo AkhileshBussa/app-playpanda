@@ -43,7 +43,7 @@ const createSchema = z.object({
   custom: customSchema.optional(),
   saleMode: z.enum(["bill", "link"]).default("bill"),
   priceInr: z.number().min(0).max(500000).nullable().default(null),
-  paymentMethod: z.enum(PAYMENT_METHODS).optional(),
+  paymentMethod: z.enum(PAYMENT_METHODS, { message: "Pick how it was paid" }),
   transactionRef: z.string().trim().max(60).default(""),
   saleInvoiceNumber: z.string().trim().max(30).default(""),
   startsOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid start date").optional(),
@@ -128,15 +128,13 @@ export async function POST(req: Request) {
     );
   }
 
-  if (billsHere && (chargeInr ?? 0) > 0 && !input.paymentMethod) {
-    return NextResponse.json({ error: "Pick how the payment was taken" }, { status: 400 });
-  }
-
   if (input.createdOn && input.createdOn > todayIST()) {
     return NextResponse.json({ error: "Created date can't be in the future" }, { status: 400 });
   }
 
-  const startsOn = input.startsOn ?? todayIST();
+  // A membership starts the day it's recorded; startsOn stays accepted for a
+  // caller that means something different by it.
+  const startsOn = input.startsOn ?? input.createdOn ?? todayIST();
   const expiresOn = addMonths(startsOn, plan.validityMonths);
   const kidNames = input.kidNames
     .split(",")
@@ -145,15 +143,22 @@ export async function POST(req: Request) {
 
   try {
     // Advisory duplicate check (same pattern as the school log): warn when this
-    // phone already has an ACTIVE membership on the same plan; force to proceed.
+    // phone already holds an ACTIVE membership; the counter confirms to proceed.
     if (!input.force) {
       const existing = await listMembershipsByPhone(input.phone);
       const today = todayIST();
-      const dup = existing.find(
-        (m) => m.planName === plan.planName && membershipStatus(m, today) === "active"
-      );
+      const active = existing.filter((m) => membershipStatus(m, today) === "active");
+      const dup = active.find((m) => m.planName === plan.planName) ?? active[0];
       if (dup) {
-        return NextResponse.json({ duplicate: true, existing: dup }, { status: 409 });
+        return NextResponse.json(
+          {
+            duplicate: true,
+            existing: dup,
+            activeCount: active.length,
+            samePlan: dup.planName === plan.planName,
+          },
+          { status: 409 }
+        );
       }
     }
 
@@ -194,7 +199,7 @@ export async function POST(req: Request) {
       }
       saleInvoiceNumber = sale.invoiceNumber;
 
-      if (input.paymentMethod && (chargeInr ?? 0) > 0) {
+      if ((chargeInr ?? 0) > 0) {
         try {
           await billing.recordPayment({
             ref: sale.ref,
@@ -242,7 +247,7 @@ export async function POST(req: Request) {
         });
         saleInvoiceId = mirror?.invoiceId ?? null;
 
-        if (mirror && input.paymentMethod && !paymentWarning && (chargeInr ?? 0) > 0) {
+        if (mirror && !paymentWarning && (chargeInr ?? 0) > 0) {
           await recordPaymentMirror({
             invoiceId: mirror.invoiceId,
             amountInr: chargeInr!,
@@ -265,6 +270,8 @@ export async function POST(req: Request) {
         punchTaxRatePercent: getPunchProduct(plan.punchProductId)?.taxRatePercent ?? 18,
         saleInvoiceNumber,
         saleInvoiceId,
+        paidBy: input.paymentMethod,
+        paidByRef: input.transactionRef,
         startsOn,
         expiresOn,
         createdOn: input.createdOn ?? null,
