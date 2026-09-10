@@ -8,12 +8,19 @@
  * file a human checks, and then `import-memberships.ts` inserts from it, so
  * anything wrong can be fixed in the CSV rather than in this script.
  *
- * Invoice matching: for each phone, Swipe's own transaction list is fetched,
- * then the invoice whose date equals the membership's start date is taken;
- * its items decide the plan's own line amount, so a bill that also carried
- * socks doesn't inflate what the membership records. `match` says how each
- * row was resolved, and every unresolved one is left blank rather than
- * guessed.
+ * Invoice matching works off what Swipe actually recorded, not off dates or
+ * prices: every invoice on the phone is opened, and the ones carrying a line
+ * in the "Play Time - Memberships" category ARE that customer's membership
+ * sales. Guessing by date missed a sale billed a fortnight after the first
+ * punch; guessing by price missed one sold at ₹1999 instead of ₹2499.
+ *
+ * Those sales are then handed to the phone's sheet rows, best match first
+ * (same plan name, nearest date), never reusing one invoice twice — a family
+ * that bought three passes has three invoices to hand out. The invoice's own
+ * date becomes the purchase date, and its membership line the price, so a
+ * bill that also carried socks doesn't inflate what the membership records.
+ * `match` says how each row was resolved, and anything unresolved is left
+ * blank rather than guessed.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -146,6 +153,28 @@ interface SwipeInvoice {
   payments: Array<{ mode: string; amount: number }>;
 }
 
+interface MembershipSale extends SwipeInvoice {
+  lineName: string;
+  /** The membership line's total for ALL of its quantity. */
+  lineAmount: number;
+  /** Passes sold on this invoice — two kids on one bill is quantity 2. */
+  quantity: number;
+  claimedBy: number[];
+}
+
+/** "Fun Ten Pass - 1hr" and "Fun Ten Pass" are the same product to us. */
+const normalizeProduct = (name: string) =>
+  name.toLowerCase().replace(/\s*-\s*punch\b/g, "").replace(/\s*-?\s*\d+\s*hrs?\b/g, "").replace(/\s+/g, " ").trim();
+
+/** A play count the sheet's own plan name claims, e.g. "Panda Max 50" → 50. */
+const playsInName = (name: string) => {
+  const m = name.replace(/\d+\s*hrs?/gi, "").match(/\b(\d{2,3})\b/);
+  return m ? Number(m[1]) : null;
+};
+
+const dayGap = (a: string, b: string) =>
+  Math.abs(new Date(`${a}T00:00:00Z`).getTime() - new Date(`${b}T00:00:00Z`).getTime()) / 86400000;
+
 async function main() {
   const csvPath = process.argv[2];
   const outPath = process.argv[3] ?? "/Users/akhilesh/Downloads/playpanda-import-review.csv";
@@ -196,23 +225,46 @@ async function main() {
     return list;
   }
 
-  async function membershipLineOn(hashId: string): Promise<number | null> {
+  async function membershipLineOn(
+    hashId: string
+  ): Promise<{ name: string; amount: number; quantity: number } | null> {
     const d = await swipeRequest<{ invoice_details?: Record<string, unknown> }>(
       "v2/doc",
       "get_invoice",
       { new_hash_id: hashId, document_type: "invoice", is_pdf: false }
     ).catch(() => ({} as { invoice_details?: Record<string, unknown> }));
     const items = (d.invoice_details?.items as Array<Record<string, unknown>>) ?? [];
-    let total = 0;
-    let found = false;
+    let amount = 0;
+    let quantity = 0;
+    const names: string[] = [];
     for (const item of items) {
       const category = String(item.category ?? item.product_category ?? "").toLowerCase().trim();
       if (category !== MEMBERSHIP_CATEGORY) continue;
-      found = true;
-      const quantity = Number(item.quantity ?? item.qty ?? 0);
-      total += item.total_amount != null ? Number(item.total_amount) : quantity * Number(item.price_with_tax ?? 0);
+      const qty = Number(item.quantity ?? item.qty ?? 1) || 1;
+      quantity += qty;
+      amount += item.total_amount != null ? Number(item.total_amount) : qty * Number(item.price_with_tax ?? 0);
+      names.push(String(item.name ?? item.product_name ?? "").trim());
     }
-    return found ? total : null;
+    return names.length ? { name: [...new Set(names)].join(" + "), amount, quantity: quantity || 1 } : null;
+  }
+
+  const salesByPhone = new Map<string, MembershipSale[]>();
+
+  /** Every membership sale Swipe holds for this phone, oldest first. */
+  async function salesFor(phone: string): Promise<MembershipSale[]> {
+    const cached = salesByPhone.get(phone);
+    if (cached) return cached;
+    const paid = (await invoicesFor(phone)).filter((inv) => inv.total > 0);
+    const sales: MembershipSale[] = [];
+    for (const inv of paid) {
+      const line = await membershipLineOn(inv.hashId);
+      if (line && line.amount > 0) {
+        sales.push({ ...inv, lineName: line.name, lineAmount: line.amount, quantity: line.quantity, claimedBy: [] });
+      }
+    }
+    sales.sort((a, b) => (a.isoDate ?? "").localeCompare(b.isoDate ?? ""));
+    salesByPhone.set(phone, sales);
+    return sales;
   }
 
   for (let i = 1; i < rows.length; i++) {
@@ -228,7 +280,7 @@ async function main() {
 
     const key = sheetPlan.toLowerCase().replace(/\s+/g, " ").trim();
     const catalogKey = CATALOG_KEYS[key];
-    const plan = catalogKey ? MEMBERSHIP_PLANS.find((p) => p.key === catalogKey) ?? null : null;
+    let plan = catalogKey ? MEMBERSHIP_PLANS.find((p) => p.key === catalogKey) ?? null : null;
 
     const visits: string[] = [];
     for (let c = 5; c < row.length; c++) {
@@ -257,56 +309,78 @@ async function main() {
       importable = "no";
     }
 
-    let invoice: SwipeInvoice | null = null;
+    let invoice: MembershipSale | null = null;
     let planAmount: number | null = null;
-    if (plan && phone.length === 10 && importable === "yes") {
-      const list = await invoicesFor(phone);
-      const paid = list.filter((inv) => inv.total > 0);
-      const sameDay = dated ? paid.filter((inv) => inv.isoDate === dated) : [];
-      const nearPrice = paid.filter((inv) => Math.abs(inv.total - plan.priceWithTax) < 1);
-      const ordered = [...sameDay, ...nearPrice.filter((n) => !sameDay.includes(n))];
+    if (phone.length === 10) {
+      const sales = await salesFor(phone);
+      const free = sales.filter((sale) => sale.claimedBy.length < sale.quantity);
+      if (free.length) {
+        const wanted = normalizeProduct(plan?.name ?? sheetPlan);
+        const scored = free.map((sale) => {
+          const billed = normalizeProduct(sale.lineName);
+          const sameProduct = billed === wanted || billed.includes(wanted) || wanted.includes(billed);
+          const gap = dated && sale.isoDate ? dayGap(dated, sale.isoDate) : 400;
+          return { sale, score: (sameProduct ? 0 : 1000) + gap, sameProduct, gap };
+        });
+        scored.sort((a, b) => a.score - b.score);
+        const best = scored[0];
+        invoice = best.sale;
+        invoice.claimedBy.push(sheetRow);
+        planAmount = Math.round((invoice.lineAmount / invoice.quantity) * 100) / 100;
 
-      // Only a bill carrying a membership line can be this membership's sale —
-      // a ₹120 snack bill on the same day is not.
-      for (const candidate of ordered.slice(0, 4)) {
-        const line = await membershipLineOn(candidate.hashId);
-        if (line != null && line > 0) {
-          invoice = candidate;
-          planAmount = line;
-          break;
+        match = best.sameProduct
+          ? `${invoice.serial} — ${invoice.lineName}`
+          : `${invoice.serial} bills "${invoice.lineName}", sheet says "${sheetPlan}"`;
+        if (invoice.quantity > 1) {
+          notes.push(`${invoice.serial} covers ${invoice.quantity} passes — this row takes one`);
         }
-      }
-
-      if (invoice) {
-        const sameDayHit = invoice.isoDate === dated;
-        match = sameDayHit
-          ? "invoice dated the same day"
-          : dated
-            ? `sheet says ${dated}, invoice ${invoice.serial} says ${invoice.isoDate}`
-            : `dated from invoice ${invoice.serial}`;
-        if (!sameDayHit && dated) {
-          notes.push("start date disagrees with the invoice — check which is right");
+        if (!best.sameProduct) notes.push("the invoice names a different plan than the sheet");
+        if (best.gap > 3 && dated) notes.push(`sheet's first punch is ${dated}, the sale is ${invoice.isoDate}`);
+        if (plan && Math.abs(invoice.lineAmount - plan.priceWithTax) > 1) {
+          notes.push(`sold at ₹${invoice.lineAmount}, catalogue is ₹${plan.priceWithTax}`);
         }
       } else {
-        match = paid.length
-          ? `no membership invoice found (${paid.length} paid invoice(s) on this number)`
-          : "no paid invoice in Swipe for this number";
+        match = sales.length
+          ? `no membership sale left on this number (${sales.length} already matched to other rows)`
+          : "no membership sale in Swipe for this number";
       }
     }
 
-    const createdOn = dated ?? invoice?.isoDate ?? todayIST();
-    if (!dated) {
-      notes.push(
-        invoice?.isoDate
-          ? "no date in the sheet — start taken from the invoice"
-          : "no date in the sheet or Swipe — start left at the export day"
-      );
+    // The sheet's plan names are informal, so where it named something with no
+    // product behind it, the invoice's own line decides what was sold.
+    if (invoice && (!plan || NO_SWIPE_PRODUCT.has(key))) {
+      const billedName = normalizeProduct(invoice.lineName);
+      const billed = MEMBERSHIP_PLANS.find((p) => normalizeProduct(p.name) === billedName) ?? null;
+      const sheetClaims = playsInName(sheetPlan);
+      const contradicts = billed && sheetClaims != null && billed.totalPlays !== sheetClaims;
+      if (billed && !contradicts) {
+        plan = billed;
+        importable = "yes";
+        match = `${invoice.serial} bills ${invoice.lineName}`;
+        notes.push(`plan taken from the invoice — the sheet said "${sheetPlan}"`);
+      } else if (billed && contradicts) {
+        match = `${invoice.serial} bills ${invoice.lineName}, sheet claims ${sheetClaims} plays`;
+        notes.push("the sheet and the invoice disagree on the plan — decide before importing");
+      }
+    }
+
+    // The invoice is when they actually bought it; the sheet's punch dates are
+    // hand-written and sometimes run earlier.
+    const createdOn = invoice?.isoDate ?? dated ?? todayIST();
+    if (!invoice && !dated) notes.push("no date in the sheet or Swipe — start left at the export day");
+    if (invoice && dated && visits.some((v) => v < createdOn)) {
+      notes.push("some punches are dated before the sale");
     }
 
     const modes = [...new Set((invoice?.payments ?? []).map((p) => p.mode).filter(Boolean))];
     const paidBy = modes.length === 1 ? modes[0] : "";
     if (invoice && modes.length > 1) notes.push(`payments split across ${modes.join(" + ")}`);
     if (invoice && !modes.length) notes.push(`${invoice.serial} has no payment recorded in Swipe`);
+
+    if (plan && plan.totalPlays != null && visits.length > plan.totalPlays) {
+      notes.push(`${visits.length} punches on a ${plan.totalPlays}-play plan`);
+      importable = "no";
+    }
 
     out.push([
       String(sheetRow),
