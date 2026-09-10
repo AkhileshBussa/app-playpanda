@@ -3,7 +3,12 @@
 One Postgres (Neon via Vercel Marketplace; any `DATABASE_URL` works), one
 schema block: [`src/lib/db/schema.ts`](../src/lib/db/schema.ts). Every table is
 created idempotently on first use — installing the database is the only
-migration step. For the one-time cutover from the old per-module tables, run:
+migration step.
+
+**Today prod, preview and local all point at the same database.** Only
+`invoices` carries an `environment` column, so a row written from a laptop is
+indistinguishable from the counter's everywhere else. Treat local runs as
+touching live data, and back up before deleting anything. For the one-time cutover from the old per-module tables, run:
 
 ```bash
 psql "$DATABASE_URL" -f scripts/db-reset.sql
