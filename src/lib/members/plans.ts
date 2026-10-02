@@ -11,6 +11,8 @@
  * custom fields ("Number of Plays", "Number of Hours", "Validity (in Months)").
  */
 
+import { PRICE_VERSIONS, type PriceVersion } from "../pricing";
+
 export interface MembershipPlan {
   key: string;
   name: string;
@@ -34,7 +36,7 @@ export interface MembershipPlan {
   blurb: string;
 }
 
-export const MEMBERSHIP_PLANS: MembershipPlan[] = [
+const V1_PLANS: MembershipPlan[] = [
   {
     key: "fun-five",
     name: "Fun Five Pass",
@@ -124,43 +126,68 @@ export const MEMBERSHIP_PLANS: MembershipPlan[] = [
   },
 ];
 
+const V2_SALES: Record<string, { saleProductId: number; priceWithTax: number }> = {
+  "fun-five": { saleProductId: 215, priceWithTax: 2799 },
+  "fun-ten": { saleProductId: 214, priceWithTax: 3999 },
+  "pro-12": { saleProductId: 213, priceWithTax: 5499 },
+  "max-25": { saleProductId: 212, priceWithTax: 8799 },
+};
+
+const PLANS_BY_VERSION: Record<PriceVersion, MembershipPlan[]> = {
+  v1: V1_PLANS,
+  v2: V1_PLANS.map((p) => (V2_SALES[p.key] ? { ...p, ...V2_SALES[p.key] } : p)),
+};
+
+export function membershipPlans(version: PriceVersion): MembershipPlan[] {
+  return PLANS_BY_VERSION[version];
+}
+
+export const PLAN_KEYS = V1_PLANS.map((p) => p.key);
+
+export function plansReady(version: PriceVersion): boolean {
+  return PLANS_BY_VERSION[version].every((p) => p.saleProductId > 0);
+}
+
+export function planForSaleProduct(
+  saleProductId: number
+): { plan: MembershipPlan; version: PriceVersion } | null {
+  for (const version of PRICE_VERSIONS) {
+    const plan = PLANS_BY_VERSION[version].find((p) => p.saleProductId === saleProductId);
+    if (plan && saleProductId > 0) return { plan, version };
+  }
+  return null;
+}
+
 /**
  * Custom plans must still bill and punch against one of these existing Swipe
  * products — a custom plan has no catalogue entry of its own, so it borrows a
  * fixed plan's pair: the sale product carries its price, the punch product its
  * visits. Both keep the membership categories Swipe reports on.
  */
-export const PUNCH_PRODUCTS = MEMBERSHIP_PLANS.map((p) => ({
+export const PUNCH_PRODUCTS = V1_PLANS.map((p) => ({
   id: p.punchProductId,
   name: p.punchProductName,
   taxRatePercent: p.taxRatePercent,
-  saleProductId: p.saleProductId,
-  saleProductName: p.saleProductName,
 }));
 
-export function getPlan(key: string): MembershipPlan | null {
-  return MEMBERSHIP_PLANS.find((p) => p.key === key) ?? null;
+export function getPlan(key: string, version: PriceVersion): MembershipPlan | null {
+  return PLANS_BY_VERSION[version].find((p) => p.key === key) ?? null;
 }
 
 export function getPunchProduct(id: number) {
   return PUNCH_PRODUCTS.find((p) => p.id === id) ?? null;
 }
 
-export function getSaleProductFor(plan: {
-  planKey: string;
-  punchProductId: number;
-}): { id: number; name: string; taxRatePercent: number } | null {
-  const fixed = getPlan(plan.planKey);
-  if (fixed) {
-    return {
-      id: fixed.saleProductId,
-      name: fixed.saleProductName,
-      taxRatePercent: fixed.taxRatePercent,
-    };
-  }
-  const punch = getPunchProduct(plan.punchProductId);
-  return punch
-    ? { id: punch.saleProductId, name: punch.saleProductName, taxRatePercent: punch.taxRatePercent }
+export function getSaleProductFor(
+  plan: { planKey: string; punchProductId: number },
+  version: PriceVersion
+): { id: number; name: string; taxRatePercent: number } | null {
+  const plans = PLANS_BY_VERSION[version];
+  const source =
+    plans.find((p) => p.key === plan.planKey) ??
+    plans.find((p) => p.punchProductId === plan.punchProductId);
+  return source
+    ? { id: source.saleProductId, name: source.saleProductName, taxRatePercent: source.taxRatePercent }
     : null;
 }
 

@@ -207,7 +207,8 @@ export type EditRefusalReason =
   | "shared-invoice"
   | "unsupported"
   | "discounted"
-  | "refund-needed";
+  | "refund-needed"
+  | "price-version";
 
 /**
  * The booking behind one session card, shaped for the edit sheet: catalogue

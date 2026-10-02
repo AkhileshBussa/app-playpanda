@@ -471,29 +471,19 @@ export async function stampInvoiceSession(
 
 // ── Quote mapping ────────────────────────────────────────────────────────────
 
-import { EXTRA_ADULT, PACKAGES, SOCKS, type QuoteLine } from "../pricing";
-
-const PLAY_SKUS = new Set<string>(PACKAGES.map((p) => p.sku));
-/** Catalogue list prices by sku — product rows keep the list price even when
- *  the line being mirrored was discounted. */
-const LIST_PRICES = new Map<string, number>([
-  ...PACKAGES.map((p) => [p.sku, p.pricePerKid] as [string, number]),
-  [EXTRA_ADULT.sku, EXTRA_ADULT.price],
-  [SOCKS.child.sku, SOCKS.child.price],
-  [SOCKS.adult.sku, SOCKS.adult.price],
-]);
+import { LIST_PRICE_BY_SKU, packageForSku, type QuoteLine } from "../pricing";
 
 /** Booking-quote lines → mirror lines (same shapes the invoice carries). */
 export function quoteMirrorLines(lines: QuoteLine[]): MirrorLine[] {
   return lines.map((l) => ({
     sku: l.sku,
     name: l.name,
-    kind: PLAY_SKUS.has(l.sku) ? "play" : "addon",
+    kind: packageForSku(l.sku) ? "play" : "addon",
     itemType: l.itemType,
     quantity: l.quantity,
     unitPriceInr: l.priceWithTax,
     taxRatePercent: l.taxRatePercent,
     totalInr: l.lineTotal,
-    listPriceInr: LIST_PRICES.get(l.sku) ?? null,
+    listPriceInr: LIST_PRICE_BY_SKU.get(l.sku) ?? null,
   }));
 }

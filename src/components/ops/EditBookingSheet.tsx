@@ -6,9 +6,11 @@ import {
   EXTRA_30_MIN,
   EXTRA_ADULT,
   formatInr,
-  PACKAGES,
+  DEFAULT_PRICE_VERSION,
+  packagesFor,
   SOCKS,
   type PackageId,
+  type PriceVersion,
 } from "@/lib/pricing";
 import type { OpsSession } from "@/lib/ops/types";
 import { CounterStepper } from "./NewBookingSheet";
@@ -49,6 +51,7 @@ export default function EditBookingSheet({ session, onClose, onSaved }: EditBook
   const [childSocks, setChildSocks] = useState(0);
   const [adultSocks, setAdultSocks] = useState(0);
   const [extra30, setExtra30] = useState(0);
+  const [priceVersion, setPriceVersion] = useState<PriceVersion>(DEFAULT_PRICE_VERSION);
 
   const [loading, setLoading] = useState(true);
   /** Refusal copy when this booking can't be edited from the board. */
@@ -60,7 +63,10 @@ export default function EditBookingSheet({ session, onClose, onSaved }: EditBook
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const quote = computeQuote({ packageId, kids, extraAdults, childSocks, adultSocks, extra30 });
+  const quote = computeQuote(
+    { packageId, kids, extraAdults, childSocks, adultSocks, extra30 },
+    priceVersion
+  );
   const validPhone = /^[6-9]\d{9}$/.test(phone);
   const belowFloor = quote.total + 0.005 < collected;
   const valid = validPhone && name.trim().length >= 2 && !belowFloor;
@@ -84,6 +90,7 @@ export default function EditBookingSheet({ session, onClose, onSaved }: EditBook
           setBlocked(data.reason || "This booking can't be edited from here.");
           return;
         }
+        setPriceVersion(data.priceVersion);
         setPackageId(data.selection.packageId);
         setKids(data.selection.kids);
         setExtraAdults(data.selection.extraAdults);
@@ -149,6 +156,7 @@ export default function EditBookingSheet({ session, onClose, onSaved }: EditBook
           adultSocks,
           extra30,
           kidNames: kidNames.split(",").map((n) => n.trim()).filter(Boolean),
+          priceVersion,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -257,7 +265,7 @@ export default function EditBookingSheet({ session, onClose, onSaved }: EditBook
             <div>
               <label className={label}>Session</label>
               <div className="flex gap-2">
-                {PACKAGES.map((p) => (
+                {packagesFor(priceVersion).map((p) => (
                   <button
                     key={p.id}
                     type="button"

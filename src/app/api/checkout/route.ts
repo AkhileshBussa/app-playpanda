@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { applyDiscount, computeQuote, PACKAGES, type PackageId, type Quote } from "@/lib/pricing";
+import { applyDiscount, computeQuote, PACKAGE_IDS, PRICE_VERSIONS, type Quote } from "@/lib/pricing";
+import { getActivePriceVersion } from "@/lib/settings/priceVersion";
 import { billing, type PaymentOrder } from "@/lib/billing";
 import { createPaymentOrder, gatewayEnabled } from "@/lib/razorpay";
 import { HEARD_FROM_SOURCES } from "@/lib/heardFrom";
@@ -21,7 +22,7 @@ import { CUSTOMER_CODES_ENABLED } from "@/lib/discounts/enabled";
 const bookingSchema = z.object({
   name: z.string().trim().min(2, "Please enter your name").max(60),
   phone: z.string().regex(/^[6-9]\d{9}$/, "Please enter a valid 10-digit mobile number"),
-  packageId: z.enum(PACKAGES.map((p) => p.id) as [PackageId, ...PackageId[]]),
+  packageId: z.enum(PACKAGE_IDS),
   kids: z.number().int().min(1).max(15),
   extraAdults: z.number().int().min(0).max(20),
   childSocks: z.number().int().min(0).max(30),
@@ -33,6 +34,7 @@ const bookingSchema = z.object({
   heardFrom: z.array(z.enum(HEARD_FROM_SOURCES)).max(HEARD_FROM_SOURCES.length).default([]),
   /** Discount code the customer typed, if any. Re-checked here, never trusted. */
   discountCode: z.string().trim().min(1).max(40).optional(),
+  priceVersion: z.enum(PRICE_VERSIONS).optional(),
 });
 
 /**
@@ -56,8 +58,16 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: message }, { status: 400 });
   }
 
+  const priceVersion = await getActivePriceVersion();
+  if (input.priceVersion && input.priceVersion !== priceVersion) {
+    return NextResponse.json(
+      { error: "Our prices have just been updated. Please check your total and book again.", priceVersion },
+      { status: 409 }
+    );
+  }
+
   // Price is always computed server-side; the client total is display-only.
-  let quote: Quote = computeQuote(input);
+  let quote: Quote = computeQuote(input, priceVersion);
   const kidNames = (input.kidNames ?? []).map((n) => n.trim()).filter(Boolean);
 
   // Evaluate (don't spend) the code: both flows need the discounted price,

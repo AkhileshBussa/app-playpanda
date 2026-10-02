@@ -10,8 +10,10 @@ import {
   getPlan,
   getPunchProduct,
   getSaleProductFor,
-  MEMBERSHIP_PLANS,
+  PLAN_KEYS,
 } from "@/lib/members/plans";
+import { PRICE_VERSIONS } from "@/lib/pricing";
+import { getActivePriceVersion } from "@/lib/settings/priceVersion";
 import { membershipStatus, normalizePhone } from "@/lib/members/types";
 import { mirrorMembership } from "@/lib/members/sheets";
 import { recordInvoice, recordPaymentMirror } from "@/lib/invoices/db";
@@ -19,7 +21,7 @@ import { dbConfigured } from "@/lib/pg";
 
 export const dynamic = "force-dynamic";
 
-const fixedKeys = MEMBERSHIP_PLANS.map((p) => p.key) as [string, ...string[]];
+const fixedKeys = PLAN_KEYS as [string, ...string[]];
 
 const customSchema = z.object({
   name: z.string().trim().min(1, "Custom plan needs a name").max(60),
@@ -51,6 +53,7 @@ const createSchema = z.object({
   notes: z.string().trim().max(500).default(""),
   /** Set after the duplicate warning to create anyway. */
   force: z.boolean().optional(),
+  priceVersion: z.enum(PRICE_VERSIONS),
 });
 
 /** Sell a membership: bill it in Swipe, take the payment, and record it here. */
@@ -71,6 +74,14 @@ export async function POST(req: Request) {
   } catch (err) {
     const message = err instanceof z.ZodError ? err.issues[0]?.message : "Invalid request";
     return NextResponse.json({ error: message }, { status: 400 });
+  }
+
+  const priceVersion = await getActivePriceVersion();
+  if (input.saleMode === "bill" && input.priceVersion !== priceVersion) {
+    return NextResponse.json(
+      { error: "The price list was just switched — reload the page and try again." },
+      { status: 409 }
+    );
   }
 
   // Resolve the plan: fixed plans come from the catalog; custom plans carry
@@ -98,7 +109,7 @@ export async function POST(req: Request) {
       validityMonths: input.custom.validityMonths,
     };
   } else {
-    const fixed = getPlan(input.planKey);
+    const fixed = getPlan(input.planKey, input.priceVersion);
     if (!fixed) return NextResponse.json({ error: "Unknown plan" }, { status: 400 });
     plan = {
       planKey: fixed.key,
@@ -117,10 +128,10 @@ export async function POST(req: Request) {
 
   const billsHere = input.saleMode === "bill";
   const chargeInr = billsHere ? (input.priceInr ?? plan.priceInr ?? 0) : plan.priceInr;
-  const saleProduct = getSaleProductFor({
-    planKey: plan.planKey,
-    punchProductId: plan.punchProductId,
-  });
+  const saleProduct = getSaleProductFor(
+    { planKey: plan.planKey, punchProductId: plan.punchProductId },
+    input.priceVersion
+  );
   if (billsHere && !saleProduct) {
     return NextResponse.json(
       { error: "This plan has no Swipe sale product to bill against" },
@@ -237,7 +248,7 @@ export async function POST(req: Request) {
               unitPriceInr: chargeInr ?? 0,
               taxRatePercent: saleProduct!.taxRatePercent,
               totalInr: chargeInr ?? 0,
-              listPriceInr: getPlan(plan.planKey)?.priceWithTax ?? null,
+              listPriceInr: getPlan(plan.planKey, input.priceVersion)?.priceWithTax ?? null,
             },
           ],
           metadata: { plan_key: plan.planKey, plan_name: plan.planName },

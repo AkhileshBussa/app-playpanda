@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { normalizePhone, type Membership } from "@/lib/members/types";
 import DuplicateMembershipSheet from "./DuplicateMembershipSheet";
-import { addMonths, MEMBERSHIP_PLANS, PUNCH_PRODUCTS } from "@/lib/members/plans";
+import { addMonths, membershipPlans, planForSaleProduct, PUNCH_PRODUCTS } from "@/lib/members/plans";
+import type { PriceVersion } from "@/lib/pricing";
 import { PAYMENT_METHODS, type PaymentMethod } from "@/lib/billing/types";
 
 /** Today's membership sale invoices, as the pick-list API returns them. */
@@ -25,6 +26,7 @@ interface SaleInvoiceOption {
 interface MembershipFormProps {
   /** Optional starting phone, e.g. arriving from the counter's lookup. */
   initialPhone?: string;
+  priceVersion: PriceVersion;
 }
 
 const inputClass =
@@ -55,14 +57,16 @@ const timeIST = (ms: number) =>
  * already can still be linked instead. Custom plans set their own plays/hours
  * but bill and punch on an existing Swipe product.
  */
-export default function MembershipForm({ initialPhone = "" }: MembershipFormProps) {
+export default function MembershipForm({ initialPhone = "", priceVersion }: MembershipFormProps) {
   const router = useRouter();
+  const plans = membershipPlans(priceVersion);
+  const [linkedVersion, setLinkedVersion] = useState<PriceVersion | null>(null);
   const [phone, setPhone] = useState(initialPhone);
   const [customerName, setCustomerName] = useState("");
   const [kidNames, setKidNames] = useState("");
-  const [planKey, setPlanKey] = useState<string>(MEMBERSHIP_PLANS[0].key);
+  const [planKey, setPlanKey] = useState<string>(plans[0].key);
   const [saleMode, setSaleMode] = useState<"bill" | "link">("bill");
-  const [price, setPrice] = useState(String(MEMBERSHIP_PLANS[0].priceWithTax));
+  const [price, setPrice] = useState(String(plans[0].priceWithTax));
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(PAYMENT_METHODS[0]);
   const [transactionRef, setTransactionRef] = useState("");
   const [saleInvoice, setSaleInvoice] = useState("");
@@ -164,7 +168,7 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
   }, [saleInvoice, manualInvoice, saleOptions]);
 
   const isCustom = planKey === "custom";
-  const fixedPlan = MEMBERSHIP_PLANS.find((p) => p.key === planKey);
+  const fixedPlan = plans.find((p) => p.key === planKey);
   const validityMonths = isCustom ? parseInt(customValidity) || 0 : fixedPlan?.validityMonths ?? 0;
   const expiresOn =
     /^\d{4}-\d{2}-\d{2}$/.test(createdOn) && validityMonths > 0
@@ -178,7 +182,7 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
     : isCustom
       ? saleOptions
       : saleOptions.filter((s) =>
-          s.planLines.some((l) => l.sku === String(fixedPlan?.saleProductId ?? ""))
+          s.planLines.some((l) => planForSaleProduct(Number(l.sku))?.plan.key === planKey)
         );
 
   const selectedSale = matchingSales.find((s) => s.invoiceNumber === saleInvoice);
@@ -190,9 +194,12 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
   /** Switching plan re-prices the sale and can invalidate a picked invoice. */
   const selectPlan = (key: string) => {
     setPlanKey(key);
-    const plan = MEMBERSHIP_PLANS.find((p) => p.key === key);
+    const plan = plans.find((p) => p.key === key);
     setPrice(plan ? String(plan.priceWithTax) : "");
-    if (!manualInvoice) setSaleInvoice("");
+    if (!manualInvoice) {
+      setSaleInvoice("");
+      setLinkedVersion(null);
+    }
   };
 
   /**
@@ -208,10 +215,11 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
     if (normalizePhone(phone).length !== 10 && salePhoneDigits.length === 10) {
       setPhone(salePhoneDigits);
     }
-    const billedPlan = MEMBERSHIP_PLANS.find((p) =>
-      sale.planLines.some((l) => l.sku === String(p.saleProductId))
-    );
-    if (billedPlan && billedPlan.key !== planKey) setPlanKey(billedPlan.key);
+    const billed = sale.planLines
+      .map((l) => planForSaleProduct(Number(l.sku)))
+      .find((b) => b != null);
+    setLinkedVersion(billed?.version ?? null);
+    if (billed && billed.plan.key !== planKey) setPlanKey(billed.plan.key);
     if (sale.amount > 0) setPrice(String(sale.amount));
     if (sale.paidBy) {
       setPaymentMethod(sale.paidBy);
@@ -223,6 +231,7 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
     const next = saleInvoice === sale.invoiceNumber ? "" : sale.invoiceNumber;
     setSaleInvoice(next);
     if (next) applySale(sale);
+    else setLinkedVersion(null);
   };
 
   const submit = (e: React.FormEvent) => {
@@ -249,6 +258,7 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
         createdOn,
         notes: notes.trim(),
         force,
+        priceVersion: saleMode === "link" && linkedVersion ? linkedVersion : priceVersion,
       };
       if (isCustom) {
         body.custom = {
@@ -342,7 +352,7 @@ export default function MembershipForm({ initialPhone = "" }: MembershipFormProp
           <div>
             <label className={labelClass}>Plan *</label>
             <div className="flex flex-col gap-2">
-              {MEMBERSHIP_PLANS.map((p) => (
+              {plans.map((p) => (
                 <button
                   key={p.key}
                   type="button"

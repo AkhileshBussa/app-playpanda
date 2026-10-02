@@ -5,14 +5,17 @@ import {
   computeQuote,
   EXTRA_ADULT,
   formatInr,
-  PACKAGES,
+  packagesFor,
   SOCKS,
   type PackageId,
+  type PriceVersion,
 } from "@/lib/pricing";
 import { PAYMENT_METHODS, type PaymentMethod } from "@/lib/billing/types";
 import StepperIcon from "@/components/StepperIcon";
 
 interface NewBookingSheetProps {
+  priceVersion: PriceVersion;
+  onPriceVersionChanged: () => void;
   onClose: () => void;
   /** A booking landed — refresh the board so its card appears. */
   onCreated: () => void;
@@ -39,7 +42,12 @@ interface Created {
  * and the card's own Collect button handles it, exactly like a family who booked
  * on the app and chose to pay at the desk.
  */
-export default function NewBookingSheet({ onClose, onCreated }: NewBookingSheetProps) {
+export default function NewBookingSheet({
+  priceVersion,
+  onPriceVersionChanged,
+  onClose,
+  onCreated,
+}: NewBookingSheetProps) {
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
   const [kidNames, setKidNames] = useState("");
@@ -62,7 +70,7 @@ export default function NewBookingSheet({ onClose, onCreated }: NewBookingSheetP
   const kidNamesTouched = useRef(false);
   const phoneRef = useRef<HTMLInputElement>(null);
 
-  const quote = computeQuote({ packageId, kids, extraAdults, childSocks, adultSocks });
+  const quote = computeQuote({ packageId, kids, extraAdults, childSocks, adultSocks }, priceVersion);
   const validPhone = /^[6-9]\d{9}$/.test(phone);
   const valid = validPhone && name.trim().length >= 2;
 
@@ -139,6 +147,7 @@ export default function NewBookingSheet({ onClose, onCreated }: NewBookingSheetP
           kidNames: kidNames.split(",").map((n) => n.trim()).filter(Boolean),
           paid: paidNow,
           ...(paidNow ? { method, transactionRef: reference.trim() || undefined } : {}),
+          priceVersion,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -146,6 +155,7 @@ export default function NewBookingSheet({ onClose, onCreated }: NewBookingSheetP
         window.location.reload();
         return;
       }
+      if (res.status === 409 && data.priceVersion) onPriceVersionChanged();
       // 207: the invoice exists but the payment didn't record — that has to be
       // said out loud, not swallowed into a success message.
       if (!res.ok && res.status !== 207) throw new Error(data.error || "Couldn't create the booking");
@@ -273,7 +283,7 @@ export default function NewBookingSheet({ onClose, onCreated }: NewBookingSheetP
             <div>
               <label className={label}>Session</label>
               <div className="flex gap-2">
-                {PACKAGES.map((p) => (
+                {packagesFor(priceVersion).map((p) => (
                   <button
                     key={p.id}
                     type="button"

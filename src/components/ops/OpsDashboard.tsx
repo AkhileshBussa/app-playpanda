@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
+import { useRouter } from "next/navigation";
+import type { PriceVersion } from "@/lib/pricing";
 import { computeOpsStatus, opsEndTime, type OpsSession, type OpsStatus } from "@/lib/ops/types";
 import { BAND_SLOTS, isBandWindow } from "@/lib/ops/bands";
 import OpsSessionCard from "./OpsSessionCard";
@@ -93,7 +95,8 @@ function pollDelay(at = new Date()): number {
   return inRush ? RUSH_POLL_MS : POLL_MS;
 }
 
-export default function OpsDashboard() {
+export default function OpsDashboard({ priceVersion }: { priceVersion: PriceVersion }) {
+  const router = useRouter();
   const [apiSessions, setApiSessions] = useState<OpsSession[]>([]);
   const [overrides, setOverrides] = useState<Record<string, Override>>({});
   const [filter, setFilter] = useState<Filter>("all");
@@ -629,6 +632,8 @@ export default function OpsDashboard() {
 
       {showNewBooking && (
         <NewBookingSheet
+          priceVersion={priceVersion}
+          onPriceVersionChanged={() => router.refresh()}
           onClose={() => setShowNewBooking(false)}
           // The invoice is in Swipe now; the next poll would find it anyway,
           // but the card should appear while the family is still at the desk.
