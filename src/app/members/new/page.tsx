@@ -5,6 +5,7 @@ import OpsNav from "@/components/ops/OpsNav";
 import MembersTabs from "@/components/members/MembersTabs";
 import MembershipForm from "@/components/members/MembershipForm";
 import { normalizePhone } from "@/lib/members/types";
+import { getActivePriceVersion } from "@/lib/settings/priceVersion";
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +44,7 @@ export default async function NewMembershipPage({
         </div>
 
         <div className="mt-4">
-          <MembershipForm initialPhone={initialPhone} />
+          <MembershipForm initialPhone={initialPhone} priceVersion={await getActivePriceVersion()} />
         </div>
       </main>
     </>

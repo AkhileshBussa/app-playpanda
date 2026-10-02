@@ -8,11 +8,56 @@
  * in one place plus the new adapter.
  */
 
-export const PACKAGES = [
-  { id: "1hr", hours: 1, label: "1 Hour", pricePerKid: 499, taxRatePercent: 18, sku: "2", name: "Mini Adventure - 1hr", popular: false },
-  { id: "2hr", hours: 2, label: "2 Hours", pricePerKid: 699, taxRatePercent: 18, sku: "3", name: "Panda's Favorite - 2hr", popular: true },
-  { id: "3hr", hours: 3, label: "3 Hours", pricePerKid: 799, taxRatePercent: 18, sku: "4", name: "Panda Explorer Pass - 3hr", popular: false },
-] as const;
+export const PRICE_VERSIONS = ["v1", "v2"] as const;
+export type PriceVersion = (typeof PRICE_VERSIONS)[number];
+export const DEFAULT_PRICE_VERSION: PriceVersion = "v1";
+
+export function isPriceVersion(v: unknown): v is PriceVersion {
+  return typeof v === "string" && (PRICE_VERSIONS as readonly string[]).includes(v);
+}
+
+export const PACKAGE_IDS = ["1hr", "2hr", "3hr"] as const;
+export type PackageId = (typeof PACKAGE_IDS)[number];
+
+export interface Package {
+  id: PackageId;
+  hours: number;
+  label: string;
+  pricePerKid: number;
+  taxRatePercent: number;
+  sku: string;
+  name: string;
+  popular: boolean;
+}
+
+export const PACKAGES_BY_VERSION: Record<PriceVersion, readonly Package[]> = {
+  v1: [
+    { id: "1hr", hours: 1, label: "1 Hour", pricePerKid: 499, taxRatePercent: 18, sku: "2", name: "Mini Adventure - 1hr", popular: false },
+    { id: "2hr", hours: 2, label: "2 Hours", pricePerKid: 699, taxRatePercent: 18, sku: "3", name: "Panda's Favorite - 2hr", popular: true },
+    { id: "3hr", hours: 3, label: "3 Hours", pricePerKid: 799, taxRatePercent: 18, sku: "4", name: "Panda Explorer Pass - 3hr", popular: false },
+  ],
+  v2: [
+    { id: "1hr", hours: 1, label: "1 Hour", pricePerKid: 569, taxRatePercent: 18, sku: "209", name: "Mini Adventure - 1hr", popular: false },
+    { id: "2hr", hours: 2, label: "2 Hours", pricePerKid: 769, taxRatePercent: 18, sku: "210", name: "Panda's Favorite - 2hr", popular: true },
+    { id: "3hr", hours: 3, label: "3 Hours", pricePerKid: 869, taxRatePercent: 18, sku: "211", name: "Panda Explorer Pass - 3hr", popular: false },
+  ],
+};
+
+export function packagesFor(version: PriceVersion): readonly Package[] {
+  return PACKAGES_BY_VERSION[version];
+}
+
+export const ALL_PACKAGES: readonly (Package & { version: PriceVersion })[] = PRICE_VERSIONS.flatMap(
+  (version) => PACKAGES_BY_VERSION[version].filter((p) => p.sku).map((p) => ({ ...p, version }))
+);
+
+export function packageForSku(sku: string): (Package & { version: PriceVersion }) | null {
+  return ALL_PACKAGES.find((p) => p.sku === sku) ?? null;
+}
+
+export function packagesReady(version: PriceVersion): boolean {
+  return PACKAGES_BY_VERSION[version].every((p) => p.sku !== "");
+}
 
 export const SOCKS = {
   child: { price: 49, taxRatePercent: 18, sku: "181", name: "Socks - New - Size 2", label: "Kids socks" },
@@ -51,7 +96,12 @@ export const EXTRA_30_MIN = {
   label: "Extra 30 min",
 } as const;
 
-export type PackageId = (typeof PACKAGES)[number]["id"];
+export const ADDONS = [EXTRA_ADULT, EXTRA_30_MIN, SOCKS.child, SOCKS.adult] as const;
+
+export const LIST_PRICE_BY_SKU: ReadonlyMap<string, number> = new Map<string, number>([
+  ...ALL_PACKAGES.map((p) => [p.sku, p.pricePerKid] as [string, number]),
+  ...ADDONS.map((a) => [a.sku, a.price] as [string, number]),
+]);
 
 export interface BookingSelection {
   packageId: PackageId;
@@ -96,20 +146,21 @@ export interface Quote {
   /** Tax-inclusive grand total, INR — already net of `discount` when set. */
   total: number;
   packageLabel: string;
+  priceVersion: PriceVersion;
   /** Total before any discount, INR. Equals `total` when nothing was applied. */
   gross: number;
   /** Set only when a discount was applied. */
   discount?: AppliedDiscount;
 }
 
-export function getPackage(packageId: PackageId) {
-  const pkg = PACKAGES.find((p) => p.id === packageId);
+export function getPackage(packageId: PackageId, version: PriceVersion): Package {
+  const pkg = PACKAGES_BY_VERSION[version].find((p) => p.id === packageId);
   if (!pkg) throw new Error(`Unknown package: ${packageId}`);
   return pkg;
 }
 
-export function computeQuote(sel: BookingSelection): Quote {
-  const pkg = getPackage(sel.packageId);
+export function computeQuote(sel: BookingSelection, version: PriceVersion): Quote {
+  const pkg = getPackage(sel.packageId, version);
   const lines: QuoteLine[] = [
     {
       sku: pkg.sku,
@@ -179,6 +230,7 @@ export function computeQuote(sel: BookingSelection): Quote {
     lines,
     total,
     gross: total,
+    priceVersion: version,
     packageLabel: `${pkg.label} · ${sel.kids} kid${sel.kids > 1 ? "s" : ""}`,
   };
 }

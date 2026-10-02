@@ -500,6 +500,32 @@ export const ensureSchema = onceSchema(`
     metadata JSONB NOT NULL DEFAULT '{}'
   );
   CREATE UNIQUE INDEX IF NOT EXISTS vendors_ref_idx ON vendors (swipe_ref, environment);
+
+  CREATE TABLE IF NOT EXISTS app_settings (
+    id TEXT PRIMARY KEY,
+    environment TEXT NOT NULL DEFAULT 'local',
+    key TEXT NOT NULL,
+    value JSONB NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata JSONB NOT NULL DEFAULT '{}'
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS app_settings_key_idx ON app_settings (environment, key);
+
+  CREATE TABLE IF NOT EXISTS app_settings_audit (
+    id TEXT PRIMARY KEY,
+    environment TEXT NOT NULL DEFAULT 'local',
+    key TEXT NOT NULL,
+    before JSONB,
+    after JSONB NOT NULL,
+    changed_by TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata JSONB NOT NULL DEFAULT '{}'
+  );
+  CREATE INDEX IF NOT EXISTS app_settings_audit_key_idx
+    ON app_settings_audit (environment, key, created_at);
 `);
 
 // ── Row helpers ──────────────────────────────────────────────────────────────

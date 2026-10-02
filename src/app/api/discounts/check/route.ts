@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { computeQuote, PACKAGES, type PackageId } from "@/lib/pricing";
+import { computeQuote, PACKAGE_IDS } from "@/lib/pricing";
+import { getActivePriceVersion } from "@/lib/settings/priceVersion";
 import { dbConfigured } from "@/lib/pg";
 import { evaluateCode } from "@/lib/discounts/db";
 import { DiscountError } from "@/lib/discounts/types";
@@ -19,7 +20,7 @@ export const dynamic = "force-dynamic";
 const checkSchema = z.object({
   code: z.string().trim().min(1).max(40),
   phone: z.string().regex(/^[6-9]\d{9}$/, "Please enter a valid 10-digit mobile number"),
-  packageId: z.enum(PACKAGES.map((p) => p.id) as [PackageId, ...PackageId[]]),
+  packageId: z.enum(PACKAGE_IDS),
   kids: z.number().int().min(1).max(15),
   extraAdults: z.number().int().min(0).max(20),
   childSocks: z.number().int().min(0).max(30),
@@ -42,7 +43,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "That code isn't valid" });
   }
 
-  const quote = computeQuote(input);
+  const quote = computeQuote(input, await getActivePriceVersion());
 
   try {
     const { code, amount } = await evaluateCode({

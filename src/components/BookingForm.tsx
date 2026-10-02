@@ -8,10 +8,11 @@ import {
   computeQuote,
   EXTRA_ADULT,
   formatInr,
-  PACKAGES,
+  packagesFor,
   SOCKS,
   type AppliedDiscount,
   type PackageId,
+  type PriceVersion,
 } from "@/lib/pricing";
 import { HEARD_FROM_SOURCES } from "@/lib/heardFrom";
 import { CUSTOMER_CODES_ENABLED } from "@/lib/discounts/enabled";
@@ -96,8 +97,9 @@ function loadRazorpay(): Promise<boolean> {
   return razorpayScript;
 }
 
-export default function BookingForm() {
+export default function BookingForm({ priceVersion }: { priceVersion: PriceVersion }) {
   const router = useRouter();
+  const packages = packagesFor(priceVersion);
 
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
@@ -208,8 +210,8 @@ export default function BookingForm() {
   const touchMoved = useRef(false);
 
   const baseQuote = useMemo(
-    () => computeQuote({ packageId, kids, extraAdults, childSocks, adultSocks }),
-    [packageId, kids, extraAdults, childSocks, adultSocks]
+    () => computeQuote({ packageId, kids, extraAdults, childSocks, adultSocks }, priceVersion),
+    [packageId, kids, extraAdults, childSocks, adultSocks, priceVersion]
   );
   // Everything downstream — the sticky total, the breakdown, the pay button —
   // reads this, so there's one number and it's always the one being charged.
@@ -302,6 +304,7 @@ export default function BookingForm() {
         // The server re-checks and spends the code; the amount above is only
         // ever what the customer was shown.
         ...(applied ? { discountCode: applied.code } : {}),
+        priceVersion,
       };
       // The key deliberately excludes payNow: whichever button was tapped, the
       // same selection must reuse the same invoice, never create a second one.
@@ -318,6 +321,7 @@ export default function BookingForm() {
           body: JSON.stringify({ ...payload, payNow: payOnline }),
         });
         const data = await res.json();
+        if (res.status === 409 && data.priceVersion) router.refresh();
         if (!res.ok) throw new Error(data.error || "Something went wrong");
         checkout = data as CheckoutResponse;
         checkoutCache.current = { key: cacheKey, data: checkout };
@@ -561,7 +565,7 @@ export default function BookingForm() {
             How long will they play?
           </div>
           <div className="grid grid-cols-3 gap-2.5">
-            {PACKAGES.map((pkg) => {
+            {packages.map((pkg) => {
               const selected = pkg.id === packageId;
               return (
                 <button

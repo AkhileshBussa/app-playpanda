@@ -10,7 +10,15 @@
  * BillingProvider and swap the export in ./index.ts — nothing else changes.
  */
 
-import { EXTRA_30_MIN, EXTRA_ADULT, PACKAGES, SOCKS, round2 } from "../pricing";
+import {
+  ALL_PACKAGES,
+  EXTRA_30_MIN,
+  EXTRA_ADULT,
+  LIST_PRICE_BY_SKU,
+  packageForSku,
+  SOCKS,
+  round2,
+} from "../pricing";
 import type {
   ApplyInvoiceDiscountInput,
   ApplyInvoiceDiscountResult,
@@ -923,7 +931,7 @@ async function listTransactions(
  * (counter-built lines, membership punches) is refused rather than guessed at.
  */
 const CATALOG_TAX = new Map<string, { taxRatePercent: number; itemType: "Product" | "Service" }>([
-  ...PACKAGES.map(
+  ...ALL_PACKAGES.map(
     (p) =>
       [p.sku, { taxRatePercent: p.taxRatePercent, itemType: "Service" as const }] as [
         string,
@@ -943,13 +951,7 @@ const CATALOG_TAX = new Map<string, { taxRatePercent: number; itemType: "Product
  * and a counter edit (which re-prices at catalogue rates) would silently undo
  * that grant while its ledger entry stood. Those are refused instead.
  */
-const CATALOG_PRICE = new Map<string, number>([
-  ...PACKAGES.map((p) => [p.sku, p.pricePerKid] as [string, number]),
-  [EXTRA_ADULT.sku, EXTRA_ADULT.price],
-  [EXTRA_30_MIN.sku, EXTRA_30_MIN.price],
-  [SOCKS.child.sku, SOCKS.child.price],
-  [SOCKS.adult.sku, SOCKS.adult.price],
-]);
+const CATALOG_PRICE = LIST_PRICE_BY_SKU;
 
 type EditableItemsCheck =
   | { ok: true; quantities: Map<string, number> }
@@ -986,7 +988,7 @@ function checkEditableItems(items: SessionItem[]): EditableItemsCheck {
     quantities.set(item.sku, (quantities.get(item.sku) ?? 0) + item.quantity);
   }
 
-  const packageSkus = PACKAGES.filter((p) => quantities.has(p.sku));
+  const packageSkus = ALL_PACKAGES.filter((p) => quantities.has(p.sku));
   if (packageSkus.length > 1) return { ok: false, refused: "shared-invoice" };
   if (packageSkus.length === 0) return { ok: false, refused: "unsupported" };
   return { ok: true, quantities };
@@ -1586,6 +1588,12 @@ export const swipeBilling: BillingProvider = {
     const check = checkEditableItems(invoice.items);
     if (!check.ok) {
       return { edited: false, refused: check.refused, invoiceNumber: invoice.serialNumber };
+    }
+
+    const versionOf = (skus: Iterable<string>) =>
+      [...skus].map(packageForSku).find((p) => p != null)?.version;
+    if (versionOf(check.quantities.keys()) !== versionOf(input.lines.map((l) => l.sku))) {
+      return { edited: false, refused: "price-version", invoiceNumber: invoice.serialNumber };
     }
 
     // Payments stay attached through the rewrite, so the floor under the new

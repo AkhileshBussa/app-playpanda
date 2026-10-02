@@ -3,6 +3,7 @@ import { isOpsAuthed } from "@/lib/ops/auth";
 import OpsDashboard from "@/components/ops/OpsDashboard";
 import OpsLoginGate from "@/components/ops/OpsLoginGate";
 import OpsNav from "@/components/ops/OpsNav";
+import { getActivePriceVersion } from "@/lib/settings/priceVersion";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +23,7 @@ export default async function OpsPage() {
   return (
     <>
       <OpsNav />
-      <OpsDashboard />
+      <OpsDashboard priceVersion={await getActivePriceVersion()} />
     </>
   );
 }

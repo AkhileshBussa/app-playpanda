@@ -7,10 +7,12 @@ import {
   computeQuote,
   EXTRA_30_MIN,
   EXTRA_ADULT,
-  PACKAGES,
+  PACKAGE_IDS,
+  packageForSku,
+  PRICE_VERSIONS,
   SOCKS,
-  type PackageId,
 } from "@/lib/pricing";
+import { getActivePriceVersion } from "@/lib/settings/priceVersion";
 import {
   editInvoiceMirror,
   quoteMirrorLines,
@@ -41,7 +43,7 @@ export const dynamic = "force-dynamic";
 const bookingFields = {
   name: z.string().trim().min(2, "Enter the customer's name").max(60),
   phone: z.string().regex(/^[6-9]\d{9}$/, "Enter a valid 10-digit mobile number"),
-  packageId: z.enum(PACKAGES.map((p) => p.id) as [PackageId, ...PackageId[]]),
+  packageId: z.enum(PACKAGE_IDS),
   kids: z.number().int().min(1).max(15),
   extraAdults: z.number().int().min(0).max(20),
   childSocks: z.number().int().min(0).max(30),
@@ -50,6 +52,7 @@ const bookingFields = {
    *  longer package instead, so it defaults to none. */
   extra30: z.number().int().min(0).max(20).default(0),
   kidNames: z.array(z.string().trim().max(40)).max(15).default([]),
+  priceVersion: z.enum(PRICE_VERSIONS),
 };
 
 const bookingSchema = z
@@ -78,9 +81,17 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: message }, { status: 400 });
   }
 
+  const priceVersion = await getActivePriceVersion();
+  if (input.priceVersion !== priceVersion) {
+    return NextResponse.json(
+      { error: "The price list was just switched — close this sheet and book again.", priceVersion },
+      { status: 409 }
+    );
+  }
+
   // Priced server-side from the same catalogue the customer form uses, so a
   // counter booking and an app booking of the same selection cost the same.
-  const quote = computeQuote(input);
+  const quote = computeQuote(input, priceVersion);
   const kidNames = input.kidNames.map((n) => n.trim()).filter(Boolean);
 
   let booking;
@@ -172,6 +183,8 @@ const EDIT_REFUSAL_COPY: Record<EditRefusalReason, string> = {
     "A discount has been applied, and editing would re-price everything at full rates — adjust it in Swipe instead.",
   "refund-needed":
     "They've already paid more than that new total — a refund has to be sorted in Swipe.",
+  "price-version":
+    "This booking was sold on a different price list than the edit — close the sheet and open it again.",
 };
 
 const editSchema = z.object({
@@ -210,7 +223,7 @@ export async function GET(req: Request) {
     // Quantities → the creation form's selection. The adapter has already
     // guaranteed exactly one package line and catalogue-only skus.
     const q = state.quantitiesBySku ?? {};
-    const pkg = PACKAGES.find((p) => q[p.sku]);
+    const pkg = Object.keys(q).map(packageForSku).find((p) => p != null);
     if (!pkg) {
       return NextResponse.json({
         editable: false,
@@ -222,6 +235,7 @@ export async function GET(req: Request) {
     return NextResponse.json({
       editable: true,
       invoiceNumber: state.invoiceNumber,
+      priceVersion: pkg.version,
       selection: {
         packageId: pkg.id,
         kids: q[pkg.sku],
@@ -265,7 +279,7 @@ export async function PATCH(req: Request) {
 
   // Priced server-side from the same catalogue as creation, so an edited
   // booking costs exactly what the same selection would have cost new.
-  const quote = computeQuote(input);
+  const quote = computeQuote(input, input.priceVersion);
   const kidNames = input.kidNames.map((n) => n.trim()).filter(Boolean);
 
   let result;
