@@ -4,6 +4,7 @@ import { isOpsAuthed } from "@/lib/ops/auth";
 import { billing } from "@/lib/billing";
 import { PAYMENT_METHODS, type EditRefusalReason } from "@/lib/billing/types";
 import {
+  applyDiscount,
   computeQuote,
   EXTRA_30_MIN,
   EXTRA_ADULT,
@@ -20,6 +21,8 @@ import {
   recordPaymentMirror,
 } from "@/lib/invoices/db";
 import { dbConfigured } from "@/lib/pg";
+import { attachInvoice, discountAmountFor, redeem, releaseRedemption } from "@/lib/discounts/db";
+import { DISCOUNT_KINDS } from "@/lib/discounts/types";
 import { bumpBoard } from "@/lib/ops/state";
 
 export const dynamic = "force-dynamic";
@@ -62,10 +65,16 @@ const bookingSchema = z
     paid: z.boolean().default(false),
     method: z.enum(PAYMENT_METHODS).optional(),
     transactionRef: z.string().trim().max(60).optional(),
+    discountKind: z.enum(DISCOUNT_KINDS).optional(),
+    discountValue: z.number().positive().optional(),
   })
   .refine((v) => !v.paid || v.method != null, {
     message: "Pick how they paid",
     path: ["method"],
+  })
+  .refine((v) => v.discountKind !== "percent" || (v.discountValue ?? 0) <= 100, {
+    message: "A percentage can't be over 100",
+    path: ["discountValue"],
   });
 
 export async function POST(req: Request) {
@@ -91,8 +100,46 @@ export async function POST(req: Request) {
 
   // Priced server-side from the same catalogue the customer form uses, so a
   // counter booking and an app booking of the same selection cost the same.
-  const quote = computeQuote(input, priceVersion);
+  let quote = computeQuote(input, priceVersion);
   const kidNames = input.kidNames.map((n) => n.trim()).filter(Boolean);
+
+  if (input.discountKind && input.discountValue) {
+    const amount = discountAmountFor(
+      { kind: input.discountKind, value: input.discountValue },
+      quote.total
+    );
+    if (!(amount > 0)) {
+      return NextResponse.json({ error: "That discount works out to ₹0 off" }, { status: 400 });
+    }
+    quote = applyDiscount(quote, { code: "MANUAL", amount });
+  }
+  const discountInr = quote.discount?.amount ?? 0;
+
+  let redemptionId: string | null = null;
+  if (discountInr > 0 && dbConfigured()) {
+    try {
+      const redemption = await redeem({
+        codeId: null,
+        code: "MANUAL",
+        phone: input.phone,
+        customerName: input.name,
+        gross: quote.gross,
+        discount: discountInr,
+        net: quote.total,
+        channel: "counter",
+        appliedByName: "Counter booking",
+      });
+      redemptionId = redemption.id;
+    } catch (err) {
+      console.error("counter booking discount record failed:", err);
+      return NextResponse.json(
+        {
+          error: "Couldn't record the discount — nothing was booked. Please try again.",
+        },
+        { status: 502 }
+      );
+    }
+  }
 
   let booking;
   try {
@@ -102,6 +149,7 @@ export async function POST(req: Request) {
     });
   } catch (err) {
     console.error("counter booking failed:", err);
+    if (redemptionId) await releaseRedemption(redemptionId).catch(() => {});
     return NextResponse.json(
       { error: "Couldn't create the invoice in Swipe — please try again" },
       { status: 502 }
@@ -110,7 +158,7 @@ export async function POST(req: Request) {
 
   // Mirror into our own ledger — best-effort, the booking must never fail on it.
   if (dbConfigured()) {
-    await recordInvoice({
+    const mirror = await recordInvoice({
       number: booking.invoiceNumber,
       source: "counter",
       customer: {
@@ -121,10 +169,19 @@ export async function POST(req: Request) {
       },
       swipeRef: booking.docRef ?? null,
       grossInr: quote.gross,
-      discountInr: 0,
+      discountInr,
       netInr: quote.total,
       lines: quoteMirrorLines(quote.lines),
-    }).catch((err) => console.error("counter invoice mirror failed:", err));
+    }).catch((err) => {
+      console.error("counter invoice mirror failed:", err);
+      return null;
+    });
+    if (redemptionId) {
+      await attachInvoice(redemptionId, {
+        invoiceId: mirror?.invoiceId ?? null,
+        invoiceNumber: booking.invoiceNumber,
+      }).catch((err) => console.error("failed to link redemption to invoice:", err));
+    }
   }
 
   await bumpBoard();
@@ -167,6 +224,7 @@ export async function POST(req: Request) {
   return NextResponse.json({
     invoiceNumber: booking.invoiceNumber,
     total: quote.total,
+    discount: discountInr,
     paid: input.paid,
     amountDue: input.paid ? 0 : quote.total,
   });
