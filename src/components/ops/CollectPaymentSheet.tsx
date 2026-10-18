@@ -28,7 +28,6 @@ export default function CollectPaymentSheet({
   const due = session.amountDue;
   const [amount, setAmount] = useState(String(due));
   const [method, setMethod] = useState<PaymentMethod>("UPI");
-  const [reference, setReference] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -49,7 +48,6 @@ export default function CollectPaymentSheet({
           invoiceNumber: session.invoiceNumber,
           amount: value,
           method,
-          transactionRef: reference.trim() || undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -135,19 +133,6 @@ export default function CollectPaymentSheet({
                 </button>
               ))}
             </div>
-          </div>
-
-          <div>
-            <label className="mb-1 block px-1 text-sm font-bold uppercase tracking-widest text-ink/50">
-              Reference (optional)
-            </label>
-            <input
-              type="text"
-              value={reference}
-              onChange={(e) => setReference(e.target.value)}
-              placeholder="UPI / card reference"
-              className="w-full rounded-2xl border-2 border-ink/10 bg-white px-4 py-3 text-base font-bold text-ink outline-none placeholder:font-bold placeholder:text-ink/30 focus:border-coral"
-            />
           </div>
 
           {error && <p className="px-1 text-sm font-bold text-coral">{error}</p>}

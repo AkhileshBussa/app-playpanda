@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  applyDiscount,
   computeQuote,
   EXTRA_ADULT,
   formatInr,
@@ -19,14 +20,6 @@ interface NewBookingSheetProps {
   onClose: () => void;
   /** A booking landed — refresh the board so its card appears. */
   onCreated: () => void;
-}
-
-interface Created {
-  invoiceNumber: string;
-  total: number;
-  paid: boolean;
-  method?: PaymentMethod;
-  warning?: string;
 }
 
 /**
@@ -58,21 +51,41 @@ export default function NewBookingSheet({
   const [adultSocks, setAdultSocks] = useState(0);
   const [paidNow, setPaidNow] = useState(true);
   const [method, setMethod] = useState<PaymentMethod>("UPI");
-  const [reference, setReference] = useState("");
+  const [discountKind, setDiscountKind] = useState<"flat" | "percent">("flat");
+  const [discountValue, setDiscountValue] = useState("");
 
   const [known, setKnown] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [created, setCreated] = useState<Created | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
 
   // Never overwrite what the manager has typed themselves.
   const nameTouched = useRef(false);
   const kidNamesTouched = useRef(false);
   const phoneRef = useRef<HTMLInputElement>(null);
 
-  const quote = computeQuote({ packageId, kids, extraAdults, childSocks, adultSocks }, priceVersion);
+  const baseQuote = computeQuote(
+    { packageId, kids, extraAdults, childSocks, adultSocks },
+    priceVersion
+  );
+  const discountNumber = parseFloat(discountValue);
+  const hasDiscount = !isNaN(discountNumber) && discountNumber > 0;
+  const discountValid = !hasDiscount || discountKind !== "percent" || discountNumber <= 100;
+  const discountOff =
+    hasDiscount && discountValid
+      ? Math.min(
+          Math.round(
+            (discountKind === "percent"
+              ? (baseQuote.total * discountNumber) / 100
+              : discountNumber) * 100
+          ) / 100,
+          baseQuote.total
+        )
+      : 0;
+  const quote =
+    discountOff > 0 ? applyDiscount(baseQuote, { code: "MANUAL", amount: discountOff }) : baseQuote;
   const validPhone = /^[6-9]\d{9}$/.test(phone);
-  const valid = validPhone && name.trim().length >= 2;
+  const valid = validPhone && name.trim().length >= 2 && discountValid;
 
   useEffect(() => {
     phoneRef.current?.focus();
@@ -110,23 +123,6 @@ export default function NewBookingSheet({
     };
   }, [phone, validPhone]);
 
-  const reset = () => {
-    setPhone("");
-    setName("");
-    setKidNames("");
-    setPackageId("2hr");
-    setKids(1);
-    setExtraAdults(0);
-    setChildSocks(0);
-    setAdultSocks(0);
-    setReference("");
-    setKnown(null);
-    setCreated(null);
-    nameTouched.current = false;
-    kidNamesTouched.current = false;
-    phoneRef.current?.focus();
-  };
-
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (saving || !valid) return;
@@ -146,7 +142,8 @@ export default function NewBookingSheet({
           adultSocks,
           kidNames: kidNames.split(",").map((n) => n.trim()).filter(Boolean),
           paid: paidNow,
-          ...(paidNow ? { method, transactionRef: reference.trim() || undefined } : {}),
+          ...(paidNow ? { method } : {}),
+          ...(discountOff > 0 ? { discountKind, discountValue: discountNumber } : {}),
           priceVersion,
         }),
       });
@@ -159,14 +156,9 @@ export default function NewBookingSheet({
       // 207: the invoice exists but the payment didn't record — that has to be
       // said out loud, not swallowed into a success message.
       if (!res.ok && res.status !== 207) throw new Error(data.error || "Couldn't create the booking");
-      setCreated({
-        invoiceNumber: data.invoiceNumber,
-        total: data.total ?? quote.total,
-        paid: Boolean(data.paid),
-        method: paidNow ? method : undefined,
-        warning: data.warning,
-      });
       onCreated();
+      if (data.warning) setWarning(data.warning);
+      else onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't create the booking");
     } finally {
@@ -184,9 +176,7 @@ export default function NewBookingSheet({
 
       <div className="relative mx-4 max-h-[92dvh] w-full max-w-lg overflow-y-auto rounded-t-chunk bg-cream p-5 shadow-chunk sm:rounded-chunk">
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-xl font-black text-ink">
-            {created ? "Booked" : "New booking"}
-          </h2>
+          <h2 className="text-xl font-black text-ink">{warning ? "Booked" : "New booking"}</h2>
           <button
             onClick={onClose}
             disabled={saving}
@@ -197,41 +187,18 @@ export default function NewBookingSheet({
           </button>
         </div>
 
-        {created ? (
-          // Back-to-back families are the norm at the counter, so finishing one
-          // booking offers the next rather than just closing.
+        {warning ? (
           <div>
-            <div className="rounded-2xl bg-green/15 px-4 py-3">
-              <p className="text-base font-black text-green">
-                {created.invoiceNumber} · {formatInr(created.total)}
-              </p>
-              <p className="mt-0.5 text-sm font-bold text-ink/60">
-                {created.paid
-                  ? `Paid by ${created.method} — recorded in Swipe`
-                  : "Unpaid — collect it from the card"}
-              </p>
-            </div>
-            {created.warning && (
-              <p className="mt-2 rounded-2xl bg-coral/10 px-4 py-3 text-sm font-bold text-coral">
-                {created.warning}
-              </p>
-            )}
-            <div className="mt-4 flex gap-2">
-              <button
-                type="button"
-                onClick={reset}
-                className="flex-1 rounded-full bg-white py-3 text-base font-black text-ink shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
-              >
-                Book another
-              </button>
-              <button
-                type="button"
-                onClick={onClose}
-                className="flex-1 rounded-full bg-ink py-3 text-base font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
-              >
-                Done
-              </button>
-            </div>
+            <p className="rounded-2xl bg-coral/10 px-4 py-3 text-sm font-bold text-coral">
+              {warning}
+            </p>
+            <button
+              type="button"
+              onClick={onClose}
+              className="mt-4 w-full rounded-full bg-ink py-3 text-base font-black text-cream shadow-btn transition-all active:translate-y-0.5 active:shadow-btn-pressed"
+            >
+              Done
+            </button>
           </div>
         ) : (
           <form onSubmit={submit} className="space-y-3.5">
@@ -342,6 +309,51 @@ export default function NewBookingSheet({
             </div>
 
             <div>
+              <label className={label} htmlFor="nb-discount">
+                Discount (optional)
+              </label>
+              <div className="flex gap-2">
+                <div className="flex shrink-0 gap-1 rounded-full bg-white p-1">
+                  {(["flat", "percent"] as const).map((k) => (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => setDiscountKind(k)}
+                      className={`h-9 w-11 rounded-full text-base font-black leading-none transition-colors ${
+                        discountKind === k ? "bg-ink text-cream" : "text-ink/50 hover:bg-ink/10"
+                      }`}
+                    >
+                      {k === "flat" ? "₹" : "%"}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  id="nb-discount"
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  max={discountKind === "percent" ? 100 : baseQuote.total}
+                  step="0.01"
+                  value={discountValue}
+                  onChange={(e) => setDiscountValue(e.target.value)}
+                  placeholder={discountKind === "percent" ? "10" : "100"}
+                  className={`${field} min-w-0 flex-1`}
+                />
+              </div>
+              {discountOff > 0 && (
+                <p className="mt-1 px-1 text-xs font-bold text-ink/50">
+                  {formatInr(quote.discount?.amount ?? discountOff)} off{" "}
+                  {formatInr(baseQuote.total)}
+                </p>
+              )}
+              {!discountValid && (
+                <p className="mt-1 px-1 text-xs font-bold text-coral">
+                  A percentage can&apos;t be over 100.
+                </p>
+              )}
+            </div>
+
+            <div>
               <label className={label}>Payment</label>
               <div className="flex gap-2">
                 {(
@@ -355,7 +367,9 @@ export default function NewBookingSheet({
                     type="button"
                     onClick={() => setPaidNow(value)}
                     className={`h-11 flex-1 rounded-full text-sm font-black leading-none transition-colors ${
-                      paidNow === value ? "bg-ink text-cream" : "bg-white text-ink/60 hover:bg-ink/10"
+                      paidNow === value
+                        ? "bg-ink text-cream"
+                        : "bg-white text-ink/60 hover:bg-ink/10"
                     }`}
                   >
                     {text}
@@ -363,7 +377,7 @@ export default function NewBookingSheet({
                 ))}
               </div>
               {paidNow ? (
-                <div className="mt-2 space-y-2">
+                <div className="mt-2">
                   <div className="flex gap-2">
                     {PAYMENT_METHODS.map((m) => (
                       <button
@@ -371,20 +385,15 @@ export default function NewBookingSheet({
                         type="button"
                         onClick={() => setMethod(m)}
                         className={`h-10 flex-1 rounded-full text-sm font-black leading-none transition-colors ${
-                          method === m ? "bg-green text-cream" : "bg-white text-ink/60 hover:bg-ink/10"
+                          method === m
+                            ? "bg-green text-cream"
+                            : "bg-white text-ink/60 hover:bg-ink/10"
                         }`}
                       >
                         {m}
                       </button>
                     ))}
                   </div>
-                  <input
-                    type="text"
-                    value={reference}
-                    onChange={(e) => setReference(e.target.value)}
-                    placeholder="UPI / card reference (optional)"
-                    className={field}
-                  />
                 </div>
               ) : (
                 <p className="mt-1 px-1 text-xs font-bold text-ink/50">
